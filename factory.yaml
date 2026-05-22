@@ -1,0 +1,61 @@
+factory:
+  name: local-agent-factory
+  run_root: runs
+  runtime: python_workers
+  backend: codex_exec
+  require_review: true
+  require_tests: true
+  max_fix_loops: 3
+
+runtime:
+  python_workers:
+    queue_file: queue.json
+    event_log: logs/events.jsonl
+    lock_file: locks.json
+    poll_interval_seconds: 2
+
+backend:
+  codex_exec:
+    command: codex
+    args:
+      - exec
+      - --cd
+      - "{repo}"
+
+agents:
+  planner:
+    worker_module: agent_factory.worker
+    prompt: agents/planner.md
+    concurrency: 1
+    outputs:
+      - plan.md
+  architect:
+    worker_module: agent_factory.worker
+    prompt: agents/architect.md
+    concurrency: 1
+    outputs:
+      - architecture.md
+  task_generator:
+    worker_module: agent_factory.worker
+    prompt: agents/task-generator.md
+    concurrency: 1
+    outputs:
+      - tasks/
+  implementer:
+    worker_module: agent_factory.worker
+    prompt: agents/implementer.md
+    concurrency: 2
+    outputs:
+      - implementation-report.md
+  reviewer:
+    worker_module: agent_factory.worker
+    prompt: agents/reviewer.md
+    concurrency: 1
+    outputs:
+      - review-report.md
+  tester:
+    worker_module: agent_factory.worker
+    prompt: agents/tester.md
+    concurrency: 1
+    outputs:
+      - test-report.md
