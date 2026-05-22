@@ -1,0 +1,13 @@
+registry:
+  url: localhost:5000
+
+chart:
+  name: kube-prometheus-stack
+  source:
+    repo: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+  patch:
+    file: patches/kube-prometheus-stack.patch
+  output:
+    chart_ref: oci://localhost:5000/helm/kube-prometheus-stack
+
