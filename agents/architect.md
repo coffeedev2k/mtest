@@ -9,6 +9,7 @@ Input artifacts:
 - Product brief: {feature}
 - Planner output: {plan}
 - Factory config: {config}
+- Build memory: {memory}
 
 Required output:
 
@@ -17,7 +18,7 @@ Required output:
 
 Task:
 
-Read the product brief and planner output. Produce a concise architecture decision record for the factory to build the requested product.
+Read the product brief, planner output, and build memory. Produce a concise architecture decision record for the factory to build the requested product.
 
 The architecture must include:
 
@@ -28,6 +29,7 @@ The architecture must include:
 - test strategy with unit, regression, and e2e layers
 - risks and mitigations
 - constraints for implementer workers
+- already completed task boundaries that must not be repeated
 
 Constraints:
 

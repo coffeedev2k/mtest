@@ -8,6 +8,7 @@ Input artifacts:
 
 - Product brief: {feature}
 - Factory config: {config}
+- Build memory: {memory}
 
 Required output:
 
@@ -16,7 +17,7 @@ Required output:
 
 Task:
 
-Read the product brief and produce a concise implementation plan for the agent factory to build the requested product.
+Read the product brief and build memory, then produce a concise implementation plan for the agent factory to build the requested product.
 
 The plan must include:
 
@@ -27,6 +28,7 @@ The plan must include:
 - test strategy with unit, regression, and e2e layers
 - risks and blockers
 - first task recommendation
+- completed work summary from build memory
 
 Constraints:
 

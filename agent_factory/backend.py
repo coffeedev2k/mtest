@@ -155,6 +155,7 @@ def _render_prompt(repo_root: Path, run_dir: Path, role: str, job: dict[str, Any
         job_id=job["id"],
         feature=run_dir / "input" / "feature.md",
         config=run_dir / "input" / "factory.yaml",
+        memory=run_dir / "input" / "build-memory.md",
         plan=run_dir / "plan.md",
         architecture=run_dir / "architecture.md",
         tasks=run_dir / "tasks",

@@ -53,7 +53,12 @@ def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
     return create_run(feature_path, config_path, status="dry_run")
 
 
-def create_run(feature_path: Path, config_path: Path, status: str = "running") -> DryRunResult:
+def create_run(
+    feature_path: Path,
+    config_path: Path,
+    status: str = "running",
+    memory_path: Path | None = None,
+) -> DryRunResult:
     feature_path = feature_path.resolve()
     config_path = config_path.resolve()
     if not feature_path.is_file():
@@ -68,6 +73,8 @@ def create_run(feature_path: Path, config_path: Path, status: str = "running") -
 
     shutil.copy2(feature_path, run_dir / "input" / feature_path.name)
     shutil.copy2(config_path, run_dir / "input" / config_path.name)
+    if memory_path is not None:
+        shutil.copy2(memory_path, run_dir / "input" / "build-memory.md")
 
     now = _now()
     state = {
@@ -110,13 +117,18 @@ def create_run(feature_path: Path, config_path: Path, status: str = "running") -
     )
 
 
-def run_only(feature_path: Path, config_path: Path, role: str) -> DryRunResult:
+def run_only(feature_path: Path, config_path: Path, role: str, memory_path: Path | None = None) -> DryRunResult:
     roles = ROLE_SEQUENCE[: ROLE_SEQUENCE.index(role) + 1]
-    return run_roles(feature_path, config_path, roles)
+    return run_roles(feature_path, config_path, roles, memory_path=memory_path)
 
 
-def run_roles(feature_path: Path, config_path: Path, roles: tuple[str, ...]) -> DryRunResult:
-    result = create_run(feature_path, config_path, status="running")
+def run_roles(
+    feature_path: Path,
+    config_path: Path,
+    roles: tuple[str, ...],
+    memory_path: Path | None = None,
+) -> DryRunResult:
+    result = create_run(feature_path, config_path, status="running", memory_path=memory_path)
     repo_root = config_path.resolve().parent
     config = load_factory_config(result.run_dir / "input" / "factory.yaml")
     _progress(result, f"created run {result.run_dir.name}")
@@ -220,9 +232,10 @@ def build_feature(
         raise ValueError("max_tasks must be >= 1")
     _print_global_progress(f"starting build for {max_tasks} task(s)")
     iterations = []
+    memory_path = _initialize_build_memory(config_path.resolve().parent, feature_path)
     for index in range(1, max_tasks + 1):
         _print_global_progress(f"starting task cycle {index}/{max_tasks}")
-        planning = run_only(feature_path, config_path, "task_generator")
+        planning = run_only(feature_path, config_path, "task_generator", memory_path=memory_path)
         task_file = planning.run_dir / "tasks" / "001-chartpatch-plan.md"
         _print_global_progress(f"generated task {task_file}")
         execution = run_task(task_file, config_path)
@@ -230,6 +243,7 @@ def build_feature(
         if commit:
             commit_sha = _commit_gate(config_path.resolve().parent, task_file)
             _print_global_progress(f"created gate commit {commit_sha}")
+        _append_completed_task(memory_path, index, task_file, execution, commit_sha)
         iterations.append(
             BuildIterationResult(
                 index=index,
@@ -334,7 +348,7 @@ def _initial_jobs(feature_name: str, config_name: str) -> list[dict[str, Any]]:
             "role": "planner",
             "status": "queued",
             "depends_on": [],
-            "input_artifacts": [f"input/{feature_name}", f"input/{config_name}"],
+            "input_artifacts": [f"input/{feature_name}", f"input/{config_name}", "input/build-memory.md"],
             "expected_outputs": ["plan.md"],
             "lease_owner": None,
             "attempt": 0,
@@ -344,7 +358,7 @@ def _initial_jobs(feature_name: str, config_name: str) -> list[dict[str, Any]]:
             "role": "architect",
             "status": "queued",
             "depends_on": ["job-001"],
-            "input_artifacts": [f"input/{feature_name}", "plan.md", f"input/{config_name}"],
+            "input_artifacts": [f"input/{feature_name}", "plan.md", f"input/{config_name}", "input/build-memory.md"],
             "expected_outputs": ["architecture.md"],
             "lease_owner": None,
             "attempt": 0,
@@ -359,6 +373,7 @@ def _initial_jobs(feature_name: str, config_name: str) -> list[dict[str, Any]]:
                 "plan.md",
                 "architecture.md",
                 f"input/{config_name}",
+                "input/build-memory.md",
             ],
             "expected_outputs": ["tasks/001-chartpatch-plan.md"],
             "lease_owner": None,
@@ -590,6 +605,49 @@ def _task_title(task_file: Path) -> str:
         if stripped.startswith("# "):
             return stripped[2:].strip()
     return "Agent factory build gate"
+
+
+def _initialize_build_memory(repo_root: Path, feature_path: Path) -> Path:
+    memory_path = repo_root / "build-memory.md"
+    if not memory_path.exists():
+        memory_path.write_text(
+            "\n".join(
+                [
+                    "# Build Memory",
+                    "",
+                    f"Feature: {feature_path}",
+                    "",
+                    "## Completed Tasks",
+                    "",
+                    "_No completed tasks yet._",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    return memory_path
+
+
+def _append_completed_task(
+    memory_path: Path,
+    index: int,
+    task_file: Path,
+    execution: DryRunResult,
+    commit_sha: str | None,
+) -> None:
+    text = memory_path.read_text(encoding="utf-8")
+    text = text.replace("_No completed tasks yet._\n", "")
+    title = _task_title(task_file)
+    entry = "\n".join(
+        [
+            f"- Task cycle {index}: {title}",
+            f"  - task_file: {task_file}",
+            f"  - execution_run: {execution.run_dir}",
+            f"  - commit: {commit_sha or 'none'}",
+            "",
+        ]
+    )
+    memory_path.write_text(text.rstrip() + "\n" + entry, encoding="utf-8")
 
 
 def _now() -> str:

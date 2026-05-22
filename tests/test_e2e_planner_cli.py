@@ -199,10 +199,13 @@ def test_cli_build_runs_planning_and_execution_chains(tmp_path: Path) -> None:
     assert "task cycle: 1" in completed.stdout
     planning_run = tmp_path / "runs" / "001"
     execution_run = tmp_path / "runs" / "002"
+    memory = tmp_path / "build-memory.md"
     assert (planning_run / "tasks" / "001-chartpatch-plan.md").is_file()
+    assert (planning_run / "input" / "build-memory.md").is_file()
     assert (execution_run / "implementation-report.md").is_file()
     assert (execution_run / "review-report.md").is_file()
     assert (execution_run / "test-report.md").is_file()
+    assert "Task cycle 1" in memory.read_text(encoding="utf-8")
 
 
 def test_cli_build_max_tasks_runs_multiple_cycles(tmp_path: Path) -> None:
@@ -232,7 +235,12 @@ def test_cli_build_max_tasks_runs_multiple_cycles(tmp_path: Path) -> None:
     assert "task cycle: 1" in completed.stdout
     assert "task cycle: 2" in completed.stdout
     assert completed.stdout.count("commit: skipped") == 2
+    memory = (tmp_path / "build-memory.md").read_text(encoding="utf-8")
     assert (tmp_path / "runs" / "001" / "tasks" / "001-chartpatch-plan.md").is_file()
     assert (tmp_path / "runs" / "002" / "test-report.md").is_file()
     assert (tmp_path / "runs" / "003" / "tasks" / "001-chartpatch-plan.md").is_file()
+    assert (tmp_path / "runs" / "003" / "input" / "build-memory.md").is_file()
     assert (tmp_path / "runs" / "004" / "test-report.md").is_file()
+    assert "Task cycle 1" in memory
+    assert "Task cycle 2" in memory
+    assert "execution_run:" in memory

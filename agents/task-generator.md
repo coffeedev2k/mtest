@@ -10,6 +10,7 @@ Input artifacts:
 - Planner output: {plan}
 - Architecture output: {architecture}
 - Factory config: {config}
+- Build memory: {memory}
 
 Required output:
 
@@ -18,7 +19,7 @@ Required output:
 
 Task:
 
-Generate the first small implementation task for the product described by the brief, plan, and architecture.
+Generate the next small implementation task for the product described by the brief, plan, architecture, and build memory.
 
 The task must include:
 
@@ -37,7 +38,9 @@ The task must include:
 
 Constraints:
 
-- Generate only the first task.
+- Generate only one task.
+- Do not generate a task that is already listed as completed in build memory.
+- If the obvious first task is already complete, choose the next smallest incomplete task.
 - Keep the task small enough for one implementer worker.
 - Do not implement application code.
 - Do not call write/edit/apply-patch tools.
