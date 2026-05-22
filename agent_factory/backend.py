@@ -26,6 +26,8 @@ def run_backend(
 ) -> BackendResult:
     if config.backend == "fake_planner":
         return _run_fake_backend(role, job)
+    if config.backend == "fake_review_fail_once":
+        return _run_fake_review_fail_once(role, job, run_dir)
     if config.backend == "fake_slow":
         time.sleep(10)
         return _run_fake_backend(role, job)
@@ -68,6 +70,48 @@ def _run_fake_backend(role: str, job: dict[str, Any]) -> BackendResult:
         stderr="",
         outputs={output_name: content},
     )
+
+
+def _run_fake_review_fail_once(role: str, job: dict[str, Any], run_dir: Path) -> BackendResult:
+    marker = run_dir / "agents" / ".fake-review-failed-once"
+    if role == "reviewer" and not marker.exists():
+        marker.write_text("failed\n", encoding="utf-8")
+        return BackendResult(
+            returncode=0,
+            stdout="fake reviewer failed once\n",
+            stderr="",
+            outputs={
+                "review-report.md": "\n".join(
+                    [
+                        "**Pass/Fail Decision**",
+                        "",
+                        "Fail.",
+                        "",
+                        "**Findings**",
+                        "",
+                        "- Blocking: fake failure for retry coverage.",
+                        "",
+                    ]
+                )
+            },
+        )
+    if role == "tester":
+        return BackendResult(
+            returncode=0,
+            stdout="fake tester passed\n",
+            stderr="",
+            outputs={
+                "test-report.md": "\n".join(
+                    [
+                        "**Pass/Fail Decision**",
+                        "",
+                        "Pass.",
+                        "",
+                    ]
+                )
+            },
+        )
+    return _run_fake_backend(role, job)
 
 
 def _run_codex_exec(

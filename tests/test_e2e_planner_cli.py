@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.conftest import write_fake_factory_config
+from tests.conftest import write_factory_config, write_fake_factory_config
 
 
 def test_cli_only_planner_runs_worker_and_stops_at_gate(tmp_path: Path) -> None:
@@ -105,6 +105,69 @@ def test_cli_execute_task_runs_implementation_chain(tmp_path: Path) -> None:
     queue = json.loads((run_dir / "queue.json").read_text(encoding="utf-8"))
     assert state["status"] == "task_execution_gate"
     assert [job["status"] for job in queue["jobs"]] == ["passed", "passed", "passed"]
+
+
+def test_cli_execute_task_runs_fix_loop_after_review_failure(tmp_path: Path) -> None:
+    task = tmp_path / "task.md"
+    config = tmp_path / "factory.yaml"
+    task.write_text("# Task 001\n\nImplement something small.\n", encoding="utf-8")
+    write_factory_config(config, backend="fake_review_fail_once")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory",
+            "execute-task",
+            str(task),
+            "--config",
+            str(config),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "reviewer failed; starting fix loop 1/3" in completed.stdout
+    run_dir = tmp_path / "runs" / "001"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    queue = json.loads((run_dir / "queue.json").read_text(encoding="utf-8"))
+    events = (run_dir / "logs" / "events.jsonl").read_text(encoding="utf-8")
+    assert state["status"] == "task_execution_gate"
+    assert "fix_loop_started" in events
+    assert any(job.get("fix_for") == "reviewer" and job["status"] == "passed" for job in queue["jobs"])
+    assert len([job for job in queue["jobs"] if job["role"] == "reviewer"]) == 2
+
+
+def test_cli_execute_task_blocks_when_fix_loop_limit_is_exceeded(tmp_path: Path) -> None:
+    task = tmp_path / "task.md"
+    config = tmp_path / "factory.yaml"
+    task.write_text("# Task 001\n\nImplement something small.\n", encoding="utf-8")
+    write_factory_config(config, backend="fake_review_fail_once", max_fix_loops=0)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory",
+            "execute-task",
+            str(task),
+            "--config",
+            str(config),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode != 0
+    run_dir = tmp_path / "runs" / "001"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    events = (run_dir / "logs" / "events.jsonl").read_text(encoding="utf-8")
+    assert state["status"] == "blocked"
+    assert state["blocked_role"] == "reviewer"
+    assert "reviewer failed after 0 fix loop(s)" in state["blocked_reason"]
+    assert "human_intervention_required" in events
 
 
 def test_cli_build_runs_planning_and_execution_chains(tmp_path: Path) -> None:

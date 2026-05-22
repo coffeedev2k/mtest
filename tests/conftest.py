@@ -4,20 +4,24 @@ from pathlib import Path
 
 
 def write_fake_factory_config(path: Path) -> None:
+    write_factory_config(path, backend="fake_planner")
+
+
+def write_factory_config(path: Path, backend: str, max_fix_loops: int = 3) -> None:
     path.write_text(
-        """
+        f"""
 factory:
   name: test-agent-factory
   run_root: runs
   runtime: python_workers
-  backend: fake_planner
+  backend: {backend}
   require_review: true
   require_tests: true
-  max_fix_loops: 3
+  max_fix_loops: {max_fix_loops}
 
 backend:
-  fake_planner:
-    command: fake-planner
+  {backend}:
+    command: {backend}
     args: []
 
 agents:

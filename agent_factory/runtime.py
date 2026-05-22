@@ -181,8 +181,23 @@ def run_task(task_path: Path, config_path: Path) -> DryRunResult:
     write_json(result.locks_file, locks)
     append_event(result.events_file, "run_created", {"run_id": run_dir.name, "status": "running"})
     _progress(result, f"created task execution run {run_dir.name}")
-    for role in TASK_EXECUTION_SEQUENCE:
-        _run_worker_process(result, repo_root, config, role)
+    _run_worker_process(result, repo_root, config, "implementer")
+    fix_loops = 0
+    while True:
+        _ensure_queued_role(result.queue_file, "reviewer")
+        _run_worker_process(result, repo_root, config, "reviewer")
+        review_passed = _report_passed(result.run_dir / "review-report.md")
+        if not review_passed:
+            fix_loops = _run_fix_or_block(result, repo_root, config, fix_loops, "reviewer")
+            continue
+
+        _ensure_queued_role(result.queue_file, "tester")
+        _run_worker_process(result, repo_root, config, "tester")
+        test_passed = _report_passed(result.run_dir / "test-report.md")
+        if not test_passed:
+            fix_loops = _run_fix_or_block(result, repo_root, config, fix_loops, "tester")
+            continue
+        break
 
     queue = read_json(result.queue_file)
     state = read_json(result.state_file)
@@ -392,6 +407,58 @@ def _task_execution_jobs() -> list[dict[str, Any]]:
     ]
 
 
+def _fix_job(loop_index: int, failed_role: str) -> dict[str, Any]:
+    job_id = f"job-fix-{loop_index:03d}"
+    return {
+        "id": job_id,
+        "role": "implementer",
+        "status": "queued",
+        "depends_on": [],
+        "input_artifacts": [
+            "input/task.md",
+            "implementation-report.md",
+            "review-report.md",
+            "test-report.md",
+            "input/factory.yaml",
+        ],
+        "expected_outputs": ["implementation-report.md"],
+        "lease_owner": None,
+        "attempt": 0,
+        "fix_for": failed_role,
+    }
+
+
+def _retry_job(role: str, job_id: str) -> dict[str, Any]:
+    if role == "reviewer":
+        return {
+            "id": job_id,
+            "role": "reviewer",
+            "status": "queued",
+            "depends_on": [],
+            "input_artifacts": ["input/task.md", "implementation-report.md", "input/factory.yaml"],
+            "expected_outputs": ["review-report.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        }
+    if role == "tester":
+        return {
+            "id": job_id,
+            "role": "tester",
+            "status": "queued",
+            "depends_on": [],
+            "input_artifacts": [
+                "input/task.md",
+                "implementation-report.md",
+                "review-report.md",
+                "input/factory.yaml",
+            ],
+            "expected_outputs": ["test-report.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        }
+    raise ValueError(f"cannot create retry job for role: {role}")
+
+
 def _gate_for_role(role: str) -> str:
     if role == "planner":
         return "planning_gate"
@@ -407,6 +474,58 @@ def _job_status(queue: dict[str, Any], role: str) -> str:
         if job.get("role") == role:
             return str(job.get("status"))
     return "unknown"
+
+
+def _ensure_queued_role(queue_file: Path, role: str) -> None:
+    queue = read_json(queue_file)
+    if any(job.get("role") == role and job.get("status") == "queued" for job in queue.get("jobs", [])):
+        return
+    job_id = f"job-{len(queue.get('jobs', [])) + 1:03d}"
+    queue["jobs"].append(_retry_job(role, job_id))
+    write_json(queue_file, queue)
+
+
+def _report_passed(path: Path) -> bool:
+    lines = [line.strip().strip("*").strip().lower() for line in path.read_text(encoding="utf-8").splitlines()]
+    try:
+        index = next(i for i, line in enumerate(lines) if "pass/fail decision" in line)
+    except StopIteration:
+        return True
+    for line in lines[index + 1 : index + 8]:
+        if not line:
+            continue
+        if line.startswith("fail") or line.startswith("failed"):
+            return False
+        if line.startswith("pass") or line.startswith("passed"):
+            return True
+    return True
+
+
+def _run_fix_or_block(
+    result: DryRunResult,
+    repo_root: Path,
+    config: FactoryConfig,
+    fix_loops: int,
+    failed_role: str,
+) -> int:
+    if fix_loops >= config.max_fix_loops:
+        _mark_blocked(
+            result,
+            failed_role,
+            f"{failed_role} failed after {config.max_fix_loops} fix loop(s)",
+        )
+    next_loop = fix_loops + 1
+    queue = read_json(result.queue_file)
+    queue["jobs"].append(_fix_job(next_loop, failed_role))
+    write_json(result.queue_file, queue)
+    append_event(
+        result.events_file,
+        "fix_loop_started",
+        {"loop": next_loop, "failed_role": failed_role},
+    )
+    _progress(result, f"{failed_role} failed; starting fix loop {next_loop}/{config.max_fix_loops}")
+    _run_worker_process(result, repo_root, config, "implementer")
+    return next_loop
 
 
 def _agent_config(config: FactoryConfig, role: str):

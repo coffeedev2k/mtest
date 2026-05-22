@@ -507,7 +507,7 @@ Initial stuck criteria:
 - a backend exits with a non-zero code
 - a worker does not produce required output artifacts
 - a job dependency never becomes `passed`
-- a future fix loop exceeds `max_fix_loops`
+- a fix loop exceeds `max_fix_loops`
 
 When the stuck gate triggers, the orchestrator must:
 
