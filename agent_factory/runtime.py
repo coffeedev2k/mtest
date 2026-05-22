@@ -15,6 +15,7 @@ from .events import append_event
 from .jsonio import read_json, write_json
 
 ROLE_SEQUENCE = ("planner", "architect", "task_generator")
+TASK_EXECUTION_SEQUENCE = ("implementer", "reviewer", "tester")
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,66 @@ def run_roles(feature_path: Path, config_path: Path, roles: tuple[str, ...]) -> 
     return result
 
 
+def run_task(task_path: Path, config_path: Path) -> DryRunResult:
+    task_path = task_path.resolve()
+    config_path = config_path.resolve()
+    if not task_path.is_file():
+        raise FileNotFoundError(f"task file not found: {task_path}")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"factory config not found: {config_path}")
+
+    config = load_factory_config(config_path)
+    repo_root = config_path.parent
+    run_dir = _next_run_dir(repo_root / config.run_root)
+    _create_run_layout(run_dir)
+    shutil.copy2(task_path, run_dir / "input" / "task.md")
+    shutil.copy2(config_path, run_dir / "input" / config_path.name)
+
+    state = {
+        "run_id": run_dir.name,
+        "status": "running",
+        "task": str(run_dir / "input" / "task.md"),
+        "config": str(run_dir / "input" / config_path.name),
+        "created_at": _now(),
+        "runtime": config.runtime,
+        "backend": config.backend,
+        "worker_topology": _worker_topology(config),
+    }
+    queue = {
+        "status": "running",
+        "jobs": _task_execution_jobs(),
+    }
+    locks = {
+        "write_scopes": {},
+        "leases": {},
+    }
+
+    result = DryRunResult(
+        run_dir=run_dir,
+        state_file=run_dir / "state.json",
+        queue_file=run_dir / "queue.json",
+        locks_file=run_dir / "locks.json",
+        events_file=run_dir / "logs" / "events.jsonl",
+    )
+    write_json(result.state_file, state)
+    write_json(result.queue_file, queue)
+    write_json(result.locks_file, locks)
+    append_event(result.events_file, "run_created", {"run_id": run_dir.name, "status": "running"})
+    _progress(result, f"created task execution run {run_dir.name}")
+    for role in TASK_EXECUTION_SEQUENCE:
+        _run_worker_process(result, repo_root, config, role)
+
+    queue = read_json(result.queue_file)
+    state = read_json(result.state_file)
+    state["status"] = "task_execution_gate"
+    state["last_completed_role"] = "tester"
+    state["queue_status"] = _job_status(queue, "tester")
+    write_json(result.state_file, state)
+    append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
+    _progress(result, "paused at task_execution_gate")
+    return result
+
+
 def _run_worker_process(result: DryRunResult, repo_root: Path, config: FactoryConfig, role: str) -> None:
     agent = _agent_config(config, role)
     command = [
@@ -186,6 +247,7 @@ def _worker_topology(config: FactoryConfig) -> dict[str, Any]:
             "worker_module": agent.worker_module,
             "concurrency": agent.concurrency,
             "timeout_seconds": agent.timeout_seconds,
+            "sandbox": agent.sandbox,
             "prompt": agent.prompt,
             "outputs": list(agent.outputs),
         }
@@ -227,6 +289,46 @@ def _initial_jobs(feature_name: str, config_name: str) -> list[dict[str, Any]]:
                 f"input/{config_name}",
             ],
             "expected_outputs": ["tasks/001-chartpatch-plan.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        },
+    ]
+
+
+def _task_execution_jobs() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "job-004",
+            "role": "implementer",
+            "status": "queued",
+            "depends_on": [],
+            "input_artifacts": ["input/task.md", "input/factory.yaml"],
+            "expected_outputs": ["implementation-report.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        },
+        {
+            "id": "job-005",
+            "role": "reviewer",
+            "status": "queued",
+            "depends_on": ["job-004"],
+            "input_artifacts": ["input/task.md", "implementation-report.md", "input/factory.yaml"],
+            "expected_outputs": ["review-report.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        },
+        {
+            "id": "job-006",
+            "role": "tester",
+            "status": "queued",
+            "depends_on": ["job-005"],
+            "input_artifacts": [
+                "input/task.md",
+                "implementation-report.md",
+                "review-report.md",
+                "input/factory.yaml",
+            ],
+            "expected_outputs": ["test-report.md"],
             "lease_owner": None,
             "attempt": 0,
         },

@@ -25,6 +25,7 @@ class AgentConfig:
     prompt: str
     concurrency: int
     timeout_seconds: int
+    sandbox: str
     outputs: tuple[str, ...]
 
 
@@ -71,6 +72,9 @@ def load_factory_config(path: Path) -> FactoryConfig:
         timeout_seconds = int(value.get("timeout_seconds", 600))
         if timeout_seconds < 1:
             raise ConfigError(f"agents.{name}.timeout_seconds must be >= 1")
+        sandbox = str(value.get("sandbox", "read-only"))
+        if sandbox not in {"read-only", "danger-full-access"}:
+            raise ConfigError(f"agents.{name}.sandbox must be read-only or danger-full-access")
         parsed_agents.append(
             AgentConfig(
                 name=name,
@@ -78,6 +82,7 @@ def load_factory_config(path: Path) -> FactoryConfig:
                 prompt=_required_string(value, "prompt", f"agents.{name}"),
                 concurrency=concurrency,
                 timeout_seconds=timeout_seconds,
+                sandbox=sandbox,
                 outputs=tuple(outputs),
             )
         )

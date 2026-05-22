@@ -73,3 +73,35 @@ def test_cli_only_task_generator_runs_chain_and_stops_at_gate(tmp_path: Path) ->
     queue = json.loads((run_dir / "queue.json").read_text(encoding="utf-8"))
     assert state["status"] == "task_generation_gate"
     assert [job["status"] for job in queue["jobs"]] == ["passed", "passed", "passed"]
+
+
+def test_cli_execute_task_runs_implementation_chain(tmp_path: Path) -> None:
+    task = tmp_path / "task.md"
+    config = tmp_path / "factory.yaml"
+    task.write_text("# Task 001\n\nImplement something small.\n", encoding="utf-8")
+    write_fake_factory_config(config)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory",
+            "execute-task",
+            str(task),
+            "--config",
+            str(config),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "gate: task_execution" in completed.stdout
+    run_dir = tmp_path / "runs" / "001"
+    assert (run_dir / "implementation-report.md").is_file()
+    assert (run_dir / "review-report.md").is_file()
+    assert (run_dir / "test-report.md").is_file()
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    queue = json.loads((run_dir / "queue.json").read_text(encoding="utf-8"))
+    assert state["status"] == "task_execution_gate"
+    assert [job["status"] for job in queue["jobs"]] == ["passed", "passed", "passed"]

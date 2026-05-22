@@ -28,6 +28,7 @@ agents:
     prompt: agents/planner.md
     concurrency: 1
     timeout_seconds: 180
+    sandbox: read-only
     outputs:
       - plan.md
   architect:
@@ -35,6 +36,7 @@ agents:
     prompt: agents/architect.md
     concurrency: 1
     timeout_seconds: 240
+    sandbox: read-only
     outputs:
       - architecture.md
   task_generator:
@@ -42,6 +44,7 @@ agents:
     prompt: agents/task-generator.md
     concurrency: 1
     timeout_seconds: 180
+    sandbox: read-only
     outputs:
       - tasks/
   implementer:
@@ -49,6 +52,7 @@ agents:
     prompt: agents/implementer.md
     concurrency: 2
     timeout_seconds: 600
+    sandbox: danger-full-access
     outputs:
       - implementation-report.md
   reviewer:
@@ -56,6 +60,7 @@ agents:
     prompt: agents/reviewer.md
     concurrency: 1
     timeout_seconds: 300
+    sandbox: danger-full-access
     outputs:
       - review-report.md
   tester:
@@ -63,5 +68,6 @@ agents:
     prompt: agents/tester.md
     concurrency: 1
     timeout_seconds: 600
+    sandbox: danger-full-access
     outputs:
       - test-report.md

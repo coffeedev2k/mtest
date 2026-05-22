@@ -56,6 +56,12 @@ def _run_fake_backend(role: str, job: dict[str, Any]) -> BackendResult:
                 "",
             ]
         )
+    if role == "implementer":
+        output_name = "implementation-report.md"
+    if role == "reviewer":
+        output_name = "review-report.md"
+    if role == "tester":
+        output_name = "test-report.md"
     return BackendResult(
         returncode=0,
         stdout=f"fake backend generated {output_name}\n",
@@ -73,19 +79,17 @@ def _run_codex_exec(
 ) -> BackendResult:
     prompt = _render_prompt(repo_root, run_dir, role, job)
     output_capture = run_dir / "agents" / f"{role}.{job['id']}.last-message.md"
+    agent = _agent_config(config, role)
     args = [
         item.format(repo=str(repo_root), run=str(run_dir), role=role, job=job["id"])
         for item in config.backend_config.args
     ]
-    command = [
-        config.backend_config.command,
-        *args,
-        "--sandbox",
-        "read-only",
-        "-o",
-        str(output_capture),
-        prompt,
-    ]
+    command = [config.backend_config.command, *args]
+    if agent.sandbox == "danger-full-access":
+        command.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        command.extend(["--sandbox", "read-only"])
+    command.extend(["-o", str(output_capture), prompt])
     completed = subprocess.run(command, text=True, capture_output=True)
     outputs = {}
     if completed.returncode == 0 and output_capture.exists():
@@ -110,6 +114,10 @@ def _render_prompt(repo_root: Path, run_dir: Path, role: str, job: dict[str, Any
         plan=run_dir / "plan.md",
         architecture=run_dir / "architecture.md",
         tasks=run_dir / "tasks",
+        task=run_dir / "input" / "task.md",
+        implementation_report=run_dir / "implementation-report.md",
+        review_report=run_dir / "review-report.md",
+        test_report=run_dir / "test-report.md",
         output=run_dir / _role_output_name(role),
     )
 
@@ -121,4 +129,17 @@ def _role_output_name(role: str) -> str:
         return "architecture.md"
     if role == "task_generator":
         return "tasks/001-chartpatch-plan.md"
+    if role == "implementer":
+        return "implementation-report.md"
+    if role == "reviewer":
+        return "review-report.md"
+    if role == "tester":
+        return "test-report.md"
     raise ValueError(f"no output mapping for role: {role}")
+
+
+def _agent_config(config: FactoryConfig, role: str):
+    for agent in config.agents:
+        if agent.name == role:
+            return agent
+    raise ValueError(f"agent config not found: {role}")

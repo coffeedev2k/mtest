@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .runtime import create_dry_run, run_only
+from .runtime import create_dry_run, run_only, run_task
 from .status import render_status
 
 
@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status = subparsers.add_parser("status", help="Show run status")
     status.add_argument("run_dir", type=Path)
+    execute_task = subparsers.add_parser("execute-task", help="Run implementer, reviewer, and tester for one task")
+    execute_task.add_argument("task", type=Path)
+    execute_task.add_argument("--config", type=Path, default=Path("factory.yaml"))
 
     return parser
 
@@ -50,6 +53,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         print(render_status(args.run_dir), end="")
+        return 0
+
+    if args.command == "execute-task":
+        result = run_task(args.task, args.config)
+        print(f"created run: {result.run_dir}")
+        print(f"state: {result.state_file}")
+        print(f"queue: {result.queue_file}")
+        print(f"locks: {result.locks_file}")
+        print(f"events: {result.events_file}")
+        print("gate: task_execution")
         return 0
 
     parser.error(f"unknown command: {args.command}")

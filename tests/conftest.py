@@ -26,6 +26,7 @@ agents:
     prompt: agents/planner.md
     concurrency: 1
     timeout_seconds: 30
+    sandbox: read-only
     outputs:
       - plan.md
   implementer:
@@ -33,6 +34,7 @@ agents:
     prompt: agents/implementer.md
     concurrency: 2
     timeout_seconds: 30
+    sandbox: danger-full-access
     outputs:
       - implementation-report.md
   architect:
@@ -40,6 +42,7 @@ agents:
     prompt: agents/architect.md
     concurrency: 1
     timeout_seconds: 30
+    sandbox: read-only
     outputs:
       - architecture.md
   task_generator:
@@ -47,8 +50,25 @@ agents:
     prompt: agents/task-generator.md
     concurrency: 1
     timeout_seconds: 30
+    sandbox: read-only
     outputs:
       - tasks/
+  reviewer:
+    worker_module: agent_factory.worker
+    prompt: agents/reviewer.md
+    concurrency: 1
+    timeout_seconds: 30
+    sandbox: danger-full-access
+    outputs:
+      - review-report.md
+  tester:
+    worker_module: agent_factory.worker
+    prompt: agents/tester.md
+    concurrency: 1
+    timeout_seconds: 30
+    sandbox: danger-full-access
+    outputs:
+      - test-report.md
 """,
         encoding="utf-8",
     )
