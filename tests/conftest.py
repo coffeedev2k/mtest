@@ -25,14 +25,30 @@ agents:
     worker_module: agent_factory.worker
     prompt: agents/planner.md
     concurrency: 1
+    timeout_seconds: 30
     outputs:
       - plan.md
   implementer:
     worker_module: agent_factory.worker
     prompt: agents/implementer.md
     concurrency: 2
+    timeout_seconds: 30
     outputs:
       - implementation-report.md
+  architect:
+    worker_module: agent_factory.worker
+    prompt: agents/architect.md
+    concurrency: 1
+    timeout_seconds: 30
+    outputs:
+      - architecture.md
+  task_generator:
+    worker_module: agent_factory.worker
+    prompt: agents/task-generator.md
+    concurrency: 1
+    timeout_seconds: 30
+    outputs:
+      - tasks/
 """,
         encoding="utf-8",
     )

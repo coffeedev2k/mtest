@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .runtime import create_dry_run, run_only
+from .status import render_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["planner", "architect", "task_generator"],
         help="Run workers up to the selected role and stop at its gate",
     )
+    status = subparsers.add_parser("status", help="Show run status")
+    status.add_argument("run_dir", type=Path)
 
     return parser
 
@@ -43,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"events: {result.events_file}")
         if args.only:
             print(f"gate: {args.only}")
+        return 0
+
+    if args.command == "status":
+        print(render_status(args.run_dir), end="")
         return 0
 
     parser.error(f"unknown command: {args.command}")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,9 @@ def run_backend(
     job: dict[str, Any],
 ) -> BackendResult:
     if config.backend == "fake_planner":
+        return _run_fake_backend(role, job)
+    if config.backend == "fake_slow":
+        time.sleep(10)
         return _run_fake_backend(role, job)
     if config.backend == "codex_exec":
         return _run_codex_exec(config, repo_root, run_dir, role, job)

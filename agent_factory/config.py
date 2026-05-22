@@ -24,6 +24,7 @@ class AgentConfig:
     worker_module: str
     prompt: str
     concurrency: int
+    timeout_seconds: int
     outputs: tuple[str, ...]
 
 
@@ -67,12 +68,16 @@ def load_factory_config(path: Path) -> FactoryConfig:
         concurrency = int(value.get("concurrency", 1))
         if concurrency < 1:
             raise ConfigError(f"agents.{name}.concurrency must be >= 1")
+        timeout_seconds = int(value.get("timeout_seconds", 600))
+        if timeout_seconds < 1:
+            raise ConfigError(f"agents.{name}.timeout_seconds must be >= 1")
         parsed_agents.append(
             AgentConfig(
                 name=name,
                 worker_module=_required_string(value, "worker_module", f"agents.{name}"),
                 prompt=_required_string(value, "prompt", f"agents.{name}"),
                 concurrency=concurrency,
+                timeout_seconds=timeout_seconds,
                 outputs=tuple(outputs),
             )
         )

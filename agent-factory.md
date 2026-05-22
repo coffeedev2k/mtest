@@ -497,6 +497,53 @@ The run cannot complete unless:
 - required regression tests pass
 - e2e tests are either passing or explicitly not required for this task
 
+### Stuck Gate
+
+The orchestrator must stop and require human intervention when the run is probably wasting time or tokens.
+
+Initial stuck criteria:
+
+- a worker exceeds its configured `timeout_seconds`
+- a backend exits with a non-zero code
+- a worker does not produce required output artifacts
+- a job dependency never becomes `passed`
+- a future fix loop exceeds `max_fix_loops`
+
+When the stuck gate triggers, the orchestrator must:
+
+- mark the run `blocked` or `failed`
+- write the role and reason into `state.json`
+- write a `human_intervention_required` event
+- preserve stdout/stderr logs
+- avoid retrying indefinitely
+- tell the user which artifact or log to inspect
+
+Long-running agent frameworks can later make this policy richer, but the runtime must own these base safety checks.
+
+## Progress Logging
+
+The factory should make progress visible while it runs.
+
+The orchestrator writes progress to:
+
+- stdout for the human operator
+- `runs/<id>/logs/events.jsonl` for durable audit
+
+Examples:
+
+```text
+[agent-factory] created run 004
+[agent-factory] starting planner worker with timeout 180s
+[agent-factory] planner worker finished
+[agent-factory] paused at planning_gate
+```
+
+The user can inspect a run:
+
+```bash
+agent-factory status runs/004
+```
+
 ## Factory Config
 
 Example `factory.yaml`:
@@ -658,3 +705,34 @@ Role-specific behavior comes from:
 - gate rules
 
 This gives the factory real parallel execution while keeping agent behavior configurable.
+
+## Framework Role
+
+LangGraph, LangChain, and workflow frameworks do not replace the worker runtime.
+
+They can help with:
+
+- graph-shaped orchestration policy
+- conditional routing
+- retry loops
+- human-in-the-loop checkpoints
+- resumable execution
+- tracing and observability
+
+They should not be the only safety mechanism.
+
+The local factory still needs explicit runtime controls:
+
+- process timeouts
+- required output checks
+- queue state
+- write-scope locks
+- stdout/stderr logs
+- Git gate commits
+
+Recommended evolution:
+
+1. Keep Python workers as the execution layer.
+2. Add LangGraph inside the orchestrator when the state machine becomes too complex to keep as simple Python functions.
+3. Use Superpowers-style workflow rules as prompts and gates.
+4. Add LangChain only if the factory needs model/tool adapters, retrieval, or complex chains.

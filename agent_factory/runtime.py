@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -94,8 +95,10 @@ def run_only(feature_path: Path, config_path: Path, role: str) -> DryRunResult:
 def run_roles(feature_path: Path, config_path: Path, roles: tuple[str, ...]) -> DryRunResult:
     result = create_run(feature_path, config_path, status="running")
     repo_root = config_path.resolve().parent
+    config = load_factory_config(result.run_dir / "input" / "factory.yaml")
+    _progress(result, f"created run {result.run_dir.name}")
     for role in roles:
-        _run_worker_process(result, repo_root, role)
+        _run_worker_process(result, repo_root, config, role)
 
     queue = read_json(result.queue_file)
     state = read_json(result.state_file)
@@ -105,10 +108,12 @@ def run_roles(feature_path: Path, config_path: Path, roles: tuple[str, ...]) -> 
     state["queue_status"] = _job_status(queue, last_role)
     write_json(result.state_file, state)
     append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
+    _progress(result, f"paused at {state['status']}")
     return result
 
 
-def _run_worker_process(result: DryRunResult, repo_root: Path, role: str) -> None:
+def _run_worker_process(result: DryRunResult, repo_root: Path, config: FactoryConfig, role: str) -> None:
+    agent = _agent_config(config, role)
     command = [
         sys.executable,
         "-m",
@@ -121,21 +126,46 @@ def _run_worker_process(result: DryRunResult, repo_root: Path, role: str) -> Non
         str(repo_root),
         "--once",
     ]
+    _progress(result, f"starting {role} worker with timeout {agent.timeout_seconds}s")
     append_event(result.events_file, "worker_process_starting", {"role": role, "command": command})
-    completed = subprocess.run(command, text=True, capture_output=True)
-    (result.run_dir / "logs" / f"{role}.worker.stdout.log").write_text(completed.stdout, encoding="utf-8")
-    (result.run_dir / "logs" / f"{role}.worker.stderr.log").write_text(completed.stderr, encoding="utf-8")
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=agent.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        _write_worker_logs(result, role, stdout, stderr)
+        _mark_blocked(
+            result,
+            role,
+            f"{role} worker exceeded timeout of {agent.timeout_seconds}s",
+        )
+        return
+
+    _write_worker_logs(result, role, stdout, stderr)
     append_event(
         result.events_file,
         "worker_process_finished",
-        {"role": role, "returncode": completed.returncode},
+        {"role": role, "returncode": process.returncode},
     )
-    if completed.returncode != 0:
+    if process.returncode != 0:
         state = read_json(result.state_file)
         state["status"] = "failed"
         state["failed_role"] = role
         write_json(result.state_file, state)
-        raise RuntimeError(f"{role} worker failed with exit code {completed.returncode}")
+        _progress(result, f"{role} worker failed with exit code {process.returncode}")
+        raise RuntimeError(f"{role} worker failed with exit code {process.returncode}")
+    _progress(result, f"{role} worker finished")
 
 
 def _next_run_dir(run_root: Path) -> Path:
@@ -155,6 +185,7 @@ def _worker_topology(config: FactoryConfig) -> dict[str, Any]:
         agent.name: {
             "worker_module": agent.worker_module,
             "concurrency": agent.concurrency,
+            "timeout_seconds": agent.timeout_seconds,
             "prompt": agent.prompt,
             "outputs": list(agent.outputs),
         }
@@ -217,6 +248,35 @@ def _job_status(queue: dict[str, Any], role: str) -> str:
         if job.get("role") == role:
             return str(job.get("status"))
     return "unknown"
+
+
+def _agent_config(config: FactoryConfig, role: str):
+    for agent in config.agents:
+        if agent.name == role:
+            return agent
+    raise ValueError(f"agent config not found: {role}")
+
+
+def _write_worker_logs(result: DryRunResult, role: str, stdout: str, stderr: str) -> None:
+    (result.run_dir / "logs" / f"{role}.worker.stdout.log").write_text(stdout, encoding="utf-8")
+    (result.run_dir / "logs" / f"{role}.worker.stderr.log").write_text(stderr, encoding="utf-8")
+
+
+def _mark_blocked(result: DryRunResult, role: str, reason: str) -> None:
+    state = read_json(result.state_file)
+    state["status"] = "blocked"
+    state["blocked_role"] = role
+    state["blocked_reason"] = reason
+    write_json(result.state_file, state)
+    append_event(result.events_file, "worker_process_timeout", {"role": role, "reason": reason})
+    append_event(result.events_file, "human_intervention_required", {"role": role, "reason": reason})
+    _progress(result, f"blocked: {reason}")
+    raise RuntimeError(reason)
+
+
+def _progress(result: DryRunResult, message: str) -> None:
+    append_event(result.events_file, "progress", {"message": message})
+    print(f"[agent-factory] {message}", flush=True)
 
 
 def _now() -> str:
