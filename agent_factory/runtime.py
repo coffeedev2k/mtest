@@ -27,6 +27,14 @@ class DryRunResult:
     events_file: Path
 
 
+@dataclass(frozen=True)
+class BuildResult:
+    planning_run: DryRunResult
+    execution_run: DryRunResult
+    task_file: Path
+    commit_sha: str | None
+
+
 def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
     return create_run(feature_path, config_path, status="dry_run")
 
@@ -171,6 +179,25 @@ def run_task(task_path: Path, config_path: Path) -> DryRunResult:
     append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
     _progress(result, "paused at task_execution_gate")
     return result
+
+
+def build_feature(feature_path: Path, config_path: Path, commit: bool = True) -> BuildResult:
+    _print_global_progress("starting build")
+    planning = run_only(feature_path, config_path, "task_generator")
+    task_file = planning.run_dir / "tasks" / "001-chartpatch-plan.md"
+    _print_global_progress(f"generated task {task_file}")
+    execution = run_task(task_file, config_path)
+    commit_sha = None
+    if commit:
+        commit_sha = _commit_gate(config_path.resolve().parent, task_file)
+        _print_global_progress(f"created gate commit {commit_sha}")
+    _print_global_progress("build complete")
+    return BuildResult(
+        planning_run=planning,
+        execution_run=execution,
+        task_file=task_file,
+        commit_sha=commit_sha,
+    )
 
 
 def _run_worker_process(result: DryRunResult, repo_root: Path, config: FactoryConfig, role: str) -> None:
@@ -379,6 +406,41 @@ def _mark_blocked(result: DryRunResult, role: str, reason: str) -> None:
 def _progress(result: DryRunResult, message: str) -> None:
     append_event(result.events_file, "progress", {"message": message})
     print(f"[agent-factory] {message}", flush=True)
+
+
+def _print_global_progress(message: str) -> None:
+    print(f"[agent-factory] {message}", flush=True)
+
+
+def _commit_gate(repo_root: Path, task_file: Path) -> str | None:
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if not status.stdout.strip():
+        return None
+    subprocess.run(["git", "add", "."], cwd=repo_root, check=True)
+    title = _task_title(task_file)
+    subprocess.run(["git", "commit", "-m", title], cwd=repo_root, check=True)
+    rev = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return rev.stdout.strip()
+
+
+def _task_title(task_file: Path) -> str:
+    for line in task_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+    return "Agent factory build gate"
 
 
 def _now() -> str:

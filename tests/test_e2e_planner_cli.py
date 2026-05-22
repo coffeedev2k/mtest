@@ -105,3 +105,37 @@ def test_cli_execute_task_runs_implementation_chain(tmp_path: Path) -> None:
     queue = json.loads((run_dir / "queue.json").read_text(encoding="utf-8"))
     assert state["status"] == "task_execution_gate"
     assert [job["status"] for job in queue["jobs"]] == ["passed", "passed", "passed"]
+
+
+def test_cli_build_runs_planning_and_execution_chains(tmp_path: Path) -> None:
+    feature = tmp_path / "feature.md"
+    config = tmp_path / "factory.yaml"
+    feature.write_text("# Helm Patch Syncer\n", encoding="utf-8")
+    write_fake_factory_config(config)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory",
+            "build",
+            str(feature),
+            "--config",
+            str(config),
+            "--no-commit",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "[agent-factory] starting build" in completed.stdout
+    assert "planning run:" in completed.stdout
+    assert "execution run:" in completed.stdout
+    assert "commit: skipped" in completed.stdout
+    planning_run = tmp_path / "runs" / "001"
+    execution_run = tmp_path / "runs" / "002"
+    assert (planning_run / "tasks" / "001-chartpatch-plan.md").is_file()
+    assert (execution_run / "implementation-report.md").is_file()
+    assert (execution_run / "review-report.md").is_file()
+    assert (execution_run / "test-report.md").is_file()
