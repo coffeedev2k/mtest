@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build", help="Plan, implement, review, test, and commit one task")
     build.add_argument("feature", type=Path)
     build.add_argument("--config", type=Path, default=Path("factory.yaml"))
+    build.add_argument("--max-tasks", type=int, default=1, help="Number of sequential task cycles to run")
     build.add_argument("--no-commit", action="store_true", help="Run the build without creating a gate commit")
 
     return parser
@@ -70,16 +71,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "build":
-        result = build_feature(args.feature, args.config, commit=not args.no_commit)
-        print(f"planning run: {result.planning_run.run_dir}")
-        print(f"execution run: {result.execution_run.run_dir}")
-        print(f"task: {result.task_file}")
-        if result.commit_sha:
-            print(f"commit: {result.commit_sha}")
-        elif args.no_commit:
-            print("commit: skipped")
-        else:
-            print("commit: no changes")
+        result = build_feature(
+            args.feature,
+            args.config,
+            commit=not args.no_commit,
+            max_tasks=args.max_tasks,
+        )
+        for iteration in result.iterations:
+            print(f"task cycle: {iteration.index}")
+            print(f"planning run: {iteration.planning_run.run_dir}")
+            print(f"execution run: {iteration.execution_run.run_dir}")
+            print(f"task: {iteration.task_file}")
+            if iteration.commit_sha:
+                print(f"commit: {iteration.commit_sha}")
+            elif args.no_commit:
+                print("commit: skipped")
+            else:
+                print("commit: no changes")
         return 0
 
     parser.error(f"unknown command: {args.command}")

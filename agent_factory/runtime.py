@@ -35,6 +35,20 @@ class BuildResult:
     commit_sha: str | None
 
 
+@dataclass(frozen=True)
+class BuildIterationResult:
+    index: int
+    planning_run: DryRunResult
+    execution_run: DryRunResult
+    task_file: Path
+    commit_sha: str | None
+
+
+@dataclass(frozen=True)
+class BuildSeriesResult:
+    iterations: tuple[BuildIterationResult, ...]
+
+
 def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
     return create_run(feature_path, config_path, status="dry_run")
 
@@ -181,22 +195,38 @@ def run_task(task_path: Path, config_path: Path) -> DryRunResult:
     return result
 
 
-def build_feature(feature_path: Path, config_path: Path, commit: bool = True) -> BuildResult:
-    _print_global_progress("starting build")
-    planning = run_only(feature_path, config_path, "task_generator")
-    task_file = planning.run_dir / "tasks" / "001-chartpatch-plan.md"
-    _print_global_progress(f"generated task {task_file}")
-    execution = run_task(task_file, config_path)
-    commit_sha = None
-    if commit:
-        commit_sha = _commit_gate(config_path.resolve().parent, task_file)
-        _print_global_progress(f"created gate commit {commit_sha}")
+def build_feature(
+    feature_path: Path,
+    config_path: Path,
+    commit: bool = True,
+    max_tasks: int = 1,
+) -> BuildSeriesResult:
+    if max_tasks < 1:
+        raise ValueError("max_tasks must be >= 1")
+    _print_global_progress(f"starting build for {max_tasks} task(s)")
+    iterations = []
+    for index in range(1, max_tasks + 1):
+        _print_global_progress(f"starting task cycle {index}/{max_tasks}")
+        planning = run_only(feature_path, config_path, "task_generator")
+        task_file = planning.run_dir / "tasks" / "001-chartpatch-plan.md"
+        _print_global_progress(f"generated task {task_file}")
+        execution = run_task(task_file, config_path)
+        commit_sha = None
+        if commit:
+            commit_sha = _commit_gate(config_path.resolve().parent, task_file)
+            _print_global_progress(f"created gate commit {commit_sha}")
+        iterations.append(
+            BuildIterationResult(
+                index=index,
+                planning_run=planning,
+                execution_run=execution,
+                task_file=task_file,
+                commit_sha=commit_sha,
+            )
+        )
     _print_global_progress("build complete")
-    return BuildResult(
-        planning_run=planning,
-        execution_run=execution,
-        task_file=task_file,
-        commit_sha=commit_sha,
+    return BuildSeriesResult(
+        iterations=tuple(iterations),
     )
 
 
