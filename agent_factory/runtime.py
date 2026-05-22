@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import FactoryConfig, load_factory_config
+from .events import append_event
+from .jsonio import read_json, write_json
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,10 @@ class DryRunResult:
 
 
 def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
+    return create_run(feature_path, config_path, status="dry_run")
+
+
+def create_run(feature_path: Path, config_path: Path, status: str = "running") -> DryRunResult:
     feature_path = feature_path.resolve()
     config_path = config_path.resolve()
     if not feature_path.is_file():
@@ -38,7 +46,7 @@ def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
     now = _now()
     state = {
         "run_id": run_dir.name,
-        "status": "dry_run",
+        "status": status,
         "feature": str(run_dir / "input" / feature_path.name),
         "config": str(run_dir / "input" / config_path.name),
         "created_at": now,
@@ -47,7 +55,7 @@ def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
         "worker_topology": _worker_topology(config),
     }
     queue = {
-        "status": "dry_run",
+        "status": status,
         "jobs": [
             {
                 "id": "job-001",
@@ -71,11 +79,12 @@ def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
     locks_file = run_dir / "locks.json"
     events_file = run_dir / "logs" / "events.jsonl"
 
-    _write_json(state_file, state)
-    _write_json(queue_file, queue)
-    _write_json(locks_file, locks)
-    _append_event(events_file, "run_created", {"run_id": run_dir.name})
-    _append_event(events_file, "dry_run_created", {"worker_topology": state["worker_topology"]})
+    write_json(state_file, state)
+    write_json(queue_file, queue)
+    write_json(locks_file, locks)
+    append_event(events_file, "run_created", {"run_id": run_dir.name, "status": status})
+    if status == "dry_run":
+        append_event(events_file, "dry_run_created", {"worker_topology": state["worker_topology"]})
 
     return DryRunResult(
         run_dir=run_dir,
@@ -84,6 +93,46 @@ def create_dry_run(feature_path: Path, config_path: Path) -> DryRunResult:
         locks_file=locks_file,
         events_file=events_file,
     )
+
+
+def run_only(feature_path: Path, config_path: Path, role: str) -> DryRunResult:
+    result = create_run(feature_path, config_path, status="running")
+    repo_root = config_path.resolve().parent
+    command = [
+        sys.executable,
+        "-m",
+        "agent_factory.worker",
+        "--role",
+        role,
+        "--run",
+        str(result.run_dir),
+        "--repo",
+        str(repo_root),
+        "--once",
+    ]
+    append_event(result.events_file, "worker_process_starting", {"role": role, "command": command})
+    completed = subprocess.run(command, text=True, capture_output=True)
+    (result.run_dir / "logs" / f"{role}.worker.stdout.log").write_text(completed.stdout, encoding="utf-8")
+    (result.run_dir / "logs" / f"{role}.worker.stderr.log").write_text(completed.stderr, encoding="utf-8")
+    append_event(
+        result.events_file,
+        "worker_process_finished",
+        {"role": role, "returncode": completed.returncode},
+    )
+    if completed.returncode != 0:
+        state = read_json(result.state_file)
+        state["status"] = "failed"
+        write_json(result.state_file, state)
+        raise RuntimeError(f"{role} worker failed with exit code {completed.returncode}")
+
+    queue = read_json(result.queue_file)
+    state = read_json(result.state_file)
+    state["status"] = "planning_gate" if role == "planner" else "running"
+    state["last_completed_role"] = role
+    state["queue_status"] = queue["jobs"][0]["status"]
+    write_json(result.state_file, state)
+    append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
+    return result
 
 
 def _next_run_dir(run_root: Path) -> Path:
@@ -108,20 +157,6 @@ def _worker_topology(config: FactoryConfig) -> dict[str, Any]:
         }
         for agent in config.agents
     }
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _append_event(path: Path, event_type: str, payload: dict[str, Any]) -> None:
-    event = {
-        "type": event_type,
-        "time": _now(),
-        "payload": payload,
-    }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, sort_keys=True) + "\n")
 
 
 def _now() -> str:

@@ -32,6 +32,10 @@ factory:
   run_root: runs
   runtime: python_workers
   backend: codex_exec
+backend:
+  codex_exec:
+    command: codex
+    args: []
 agents: {}
 """,
         encoding="utf-8",
@@ -50,6 +54,10 @@ factory:
   run_root: runs
   runtime: python_workers
   backend: codex_exec
+backend:
+  codex_exec:
+    command: codex
+    args: []
 agents:
   implementer:
     worker_module: agent_factory.worker

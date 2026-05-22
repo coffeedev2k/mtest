@@ -12,6 +12,13 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class BackendConfig:
+    name: str
+    command: str
+    args: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     name: str
     worker_module: str
@@ -29,6 +36,7 @@ class FactoryConfig:
     require_review: bool
     require_tests: bool
     max_fix_loops: int
+    backend_config: BackendConfig
     agents: tuple[AgentConfig, ...]
 
 
@@ -39,6 +47,15 @@ def load_factory_config(path: Path) -> FactoryConfig:
 
     factory = _required_mapping(raw, "factory")
     agents = _required_mapping(raw, "agents")
+    factory_name = _required_string(factory, "name", "factory")
+    run_root = _required_string(factory, "run_root", "factory")
+    runtime = _required_string(factory, "runtime", "factory")
+    backend_name = _required_string(factory, "backend", "factory")
+    backend = _required_mapping(raw, "backend")
+    backend_value = _required_mapping(backend, backend_name)
+    backend_args = backend_value.get("args", [])
+    if not isinstance(backend_args, list) or not all(isinstance(item, str) for item in backend_args):
+        raise ConfigError(f"backend.{backend_name}.args must be a list of strings")
 
     parsed_agents = []
     for name, value in agents.items():
@@ -61,13 +78,18 @@ def load_factory_config(path: Path) -> FactoryConfig:
         )
 
     return FactoryConfig(
-        name=_required_string(factory, "name", "factory"),
-        run_root=Path(_required_string(factory, "run_root", "factory")),
-        runtime=_required_string(factory, "runtime", "factory"),
-        backend=_required_string(factory, "backend", "factory"),
+        name=factory_name,
+        run_root=Path(run_root),
+        runtime=runtime,
+        backend=backend_name,
         require_review=bool(factory.get("require_review", True)),
         require_tests=bool(factory.get("require_tests", True)),
         max_fix_loops=int(factory.get("max_fix_loops", 3)),
+        backend_config=BackendConfig(
+            name=backend_name,
+            command=_required_string(backend_value, "command", f"backend.{backend_name}"),
+            args=tuple(backend_args),
+        ),
         agents=tuple(parsed_agents),
     )
 
