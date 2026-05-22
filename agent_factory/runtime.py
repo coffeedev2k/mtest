@@ -13,6 +13,8 @@ from .config import FactoryConfig, load_factory_config
 from .events import append_event
 from .jsonio import read_json, write_json
 
+ROLE_SEQUENCE = ("planner", "architect", "task_generator")
+
 
 @dataclass(frozen=True)
 class DryRunResult:
@@ -56,18 +58,7 @@ def create_run(feature_path: Path, config_path: Path, status: str = "running") -
     }
     queue = {
         "status": status,
-        "jobs": [
-            {
-                "id": "job-001",
-                "role": "planner",
-                "status": "queued",
-                "depends_on": [],
-                "input_artifacts": [f"input/{feature_path.name}", f"input/{config_path.name}"],
-                "expected_outputs": ["plan.md"],
-                "lease_owner": None,
-                "attempt": 0,
-            }
-        ],
+        "jobs": _initial_jobs(feature_path.name, config_path.name),
     }
     locks = {
         "write_scopes": {},
@@ -96,8 +87,28 @@ def create_run(feature_path: Path, config_path: Path, status: str = "running") -
 
 
 def run_only(feature_path: Path, config_path: Path, role: str) -> DryRunResult:
+    roles = ROLE_SEQUENCE[: ROLE_SEQUENCE.index(role) + 1]
+    return run_roles(feature_path, config_path, roles)
+
+
+def run_roles(feature_path: Path, config_path: Path, roles: tuple[str, ...]) -> DryRunResult:
     result = create_run(feature_path, config_path, status="running")
     repo_root = config_path.resolve().parent
+    for role in roles:
+        _run_worker_process(result, repo_root, role)
+
+    queue = read_json(result.queue_file)
+    state = read_json(result.state_file)
+    last_role = roles[-1]
+    state["status"] = _gate_for_role(last_role)
+    state["last_completed_role"] = last_role
+    state["queue_status"] = _job_status(queue, last_role)
+    write_json(result.state_file, state)
+    append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
+    return result
+
+
+def _run_worker_process(result: DryRunResult, repo_root: Path, role: str) -> None:
     command = [
         sys.executable,
         "-m",
@@ -122,17 +133,9 @@ def run_only(feature_path: Path, config_path: Path, role: str) -> DryRunResult:
     if completed.returncode != 0:
         state = read_json(result.state_file)
         state["status"] = "failed"
+        state["failed_role"] = role
         write_json(result.state_file, state)
         raise RuntimeError(f"{role} worker failed with exit code {completed.returncode}")
-
-    queue = read_json(result.queue_file)
-    state = read_json(result.state_file)
-    state["status"] = "planning_gate" if role == "planner" else "running"
-    state["last_completed_role"] = role
-    state["queue_status"] = queue["jobs"][0]["status"]
-    write_json(result.state_file, state)
-    append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
-    return result
 
 
 def _next_run_dir(run_root: Path) -> Path:
@@ -157,6 +160,63 @@ def _worker_topology(config: FactoryConfig) -> dict[str, Any]:
         }
         for agent in config.agents
     }
+
+
+def _initial_jobs(feature_name: str, config_name: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "job-001",
+            "role": "planner",
+            "status": "queued",
+            "depends_on": [],
+            "input_artifacts": [f"input/{feature_name}", f"input/{config_name}"],
+            "expected_outputs": ["plan.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        },
+        {
+            "id": "job-002",
+            "role": "architect",
+            "status": "queued",
+            "depends_on": ["job-001"],
+            "input_artifacts": [f"input/{feature_name}", "plan.md", f"input/{config_name}"],
+            "expected_outputs": ["architecture.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        },
+        {
+            "id": "job-003",
+            "role": "task_generator",
+            "status": "queued",
+            "depends_on": ["job-002"],
+            "input_artifacts": [
+                f"input/{feature_name}",
+                "plan.md",
+                "architecture.md",
+                f"input/{config_name}",
+            ],
+            "expected_outputs": ["tasks/001-chartpatch-plan.md"],
+            "lease_owner": None,
+            "attempt": 0,
+        },
+    ]
+
+
+def _gate_for_role(role: str) -> str:
+    if role == "planner":
+        return "planning_gate"
+    if role == "architect":
+        return "architecture_gate"
+    if role == "task_generator":
+        return "task_generation_gate"
+    return "running"
+
+
+def _job_status(queue: dict[str, Any], role: str) -> str:
+    for job in queue.get("jobs", []):
+        if job.get("role") == role:
+            return str(job.get("status"))
+    return "unknown"
 
 
 def _now() -> str:

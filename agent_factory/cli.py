@@ -14,7 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("feature", type=Path, help="Product brief markdown file")
     run.add_argument("--config", type=Path, default=Path("factory.yaml"))
     run.add_argument("--dry-run", action="store_true", help="Create run artifacts without workers")
-    run.add_argument("--only", choices=["planner"], help="Run a single worker role and stop at its gate")
+    run.add_argument(
+        "--only",
+        choices=["planner", "architect", "task_generator"],
+        help="Run workers up to the selected role and stop at its gate",
+    )
 
     return parser
 
@@ -31,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.only:
             result = run_only(args.feature, args.config, args.only)
         else:
-            parser.error("use --dry-run or --only planner")
+            parser.error("use --dry-run or --only planner|architect|task_generator")
         print(f"created run: {result.run_dir}")
         print(f"state: {result.state_file}")
         print(f"queue: {result.queue_file}")

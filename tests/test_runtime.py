@@ -28,6 +28,9 @@ def test_create_dry_run_writes_core_artifacts(tmp_path: Path) -> None:
     assert state["worker_topology"]["implementer"]["concurrency"] == 2
     assert queue["jobs"][0]["role"] == "planner"
     assert queue["jobs"][0]["status"] == "queued"
+    assert [job["role"] for job in queue["jobs"]] == ["planner", "architect", "task_generator"]
+    assert queue["jobs"][1]["depends_on"] == ["job-001"]
+    assert queue["jobs"][2]["depends_on"] == ["job-002"]
 
 
 def test_create_dry_run_increments_run_id(tmp_path: Path) -> None:

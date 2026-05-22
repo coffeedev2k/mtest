@@ -67,7 +67,7 @@ chart:
 5. Detect all upstream container images from the rendered Kubernetes manifests.
 6. Mirror the detected images to the local OCI registry with `skopeo`.
 7. Initialize a temporary Git repository inside the unpacked chart directory.
-8. Apply the configured patch with `git apply`.
+8. Apply the configured patch with `git am --reject`.
 9. Rewrite chart image references so rendered manifests point to the local registry.
 10. Render the patched chart and verify that image references now point to the local registry.
 11. Run chart verification:
@@ -135,6 +135,35 @@ The automated E2E flow should:
 9. Package and push the patched chart to the local registry.
 10. Install the patched chart from the local registry into local `k3s`.
 11. Verify that the release becomes healthy and that running pods use local image references.
+
+## Patch Application Flow
+
+Patches are treated as transferable Git commits.
+
+The expected operator workflow for creating patch files is:
+
+```bash
+git format-patch <base-sha>
+```
+
+The sync workflow applies those patch files inside the unpacked chart working directory:
+
+```bash
+git am /path/to/patches/*.patch --reject
+```
+
+The tool should:
+
+1. Download the chart into a temporary directory under `tmp/`.
+2. Unpack the chart.
+3. Initialize a Git repository inside the unpacked chart directory.
+4. Create a baseline commit for the unmodified upstream chart.
+5. Apply the configured patch files with `git am --reject`.
+6. Continue only if `git am` exits successfully.
+7. Treat any `.rej` files or an unfinished `.git/rebase-apply` state as a patch failure.
+8. Stop at a fix gate if the patch does not apply cleanly.
+
+`--reject` is useful because it leaves reject files that explain what failed, but partial application is not considered success.
 
 ## CLI Shape
 
