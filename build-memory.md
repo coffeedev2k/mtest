@@ -27,3 +27,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/018/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/019
   - commit: c4ca43f
+- Task cycle 6: Task: Add Patch Application Support To `chartpatch sync`
+  - task_file: /home/atarasov/l/mtest/runs/020/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/021
+  - commit: 1c6d358

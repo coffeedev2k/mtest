@@ -15,6 +15,13 @@ from .images import (
 )
 from .mirror import ImageMirrorError, MirroredImage, mirror_image_mappings
 from .patch import PatchApplicationError, apply_patch_file
+from .rewrite import (
+    ImageRewriteError,
+    ImageRewriteMapping,
+    ImageRewriteVerificationError,
+    rewrite_chart_images,
+    verify_image_mapping_complete,
+)
 from .runner import CommandResult, CommandRunner
 
 
@@ -25,9 +32,6 @@ SYNC_STAGE_NAMES = (
     "mirror images",
     "apply patch",
     "rewrite images",
-    "verify patched chart",
-    "package chart",
-    "push chart",
 )
 
 
@@ -95,6 +99,9 @@ class SyncResult:
     image_target_mappings: tuple[ImageTargetMapping, ...] = ()
     mirrored_images: tuple[MirroredImage, ...] = ()
     applied_patch_file: Path | None = None
+    image_rewrites: tuple[ImageRewriteMapping, ...] = ()
+    rewritten_files: tuple[Path, ...] = ()
+    rewrite_replacements: int = 0
 
 
 class SyncWorkflowError(RuntimeError):
@@ -163,10 +170,10 @@ def run_sync(
         )
     except ImageTargetMappingError as exc:
         raise SyncWorkflowError(f"image target mapping failed: {exc}") from None
-    if len(image_target_mappings) != len(discovered_images):
-        raise SyncWorkflowError(
-            "image target mapping failed: expected exactly one target per discovered image"
-        )
+    try:
+        verify_image_mapping_complete(discovered_images, image_target_mappings)
+    except ImageRewriteVerificationError as exc:
+        raise SyncWorkflowError(f"image target mapping failed: {exc}") from None
 
     try:
         mirrored_images = mirror_image_mappings(
@@ -196,6 +203,11 @@ def run_sync(
     except PatchApplicationError as exc:
         raise SyncWorkflowError(str(exc)) from None
 
+    try:
+        rewrite_result = rewrite_chart_images(unpacked_chart, image_target_mappings)
+    except ImageRewriteError as exc:
+        raise SyncWorkflowError(str(exc)) from None
+
     return SyncResult(
         source_repo=config.chart.source.repo,
         source_chart=config.chart.source.chart,
@@ -208,6 +220,9 @@ def run_sync(
         image_target_mappings=image_target_mappings,
         mirrored_images=mirrored_images,
         applied_patch_file=applied_patch.patch_file,
+        image_rewrites=rewrite_result.mappings,
+        rewritten_files=tuple(change.path for change in rewrite_result.changes),
+        rewrite_replacements=rewrite_result.total_replacements,
     )
 
 
@@ -267,6 +282,17 @@ def render_sync_report(result: SyncResult) -> str:
         )
     if result.applied_patch_file is not None:
         lines.append(f"Applied patch: {result.applied_patch_file}")
+    if result.image_rewrites:
+        lines.append(f"Image rewrites: {len(result.image_rewrites)}")
+        lines.extend(
+            "  - "
+            f"{rewrite.source} -> {rewrite.target} "
+            f"({rewrite.replacements} replacements)"
+            for rewrite in result.image_rewrites
+        )
+    if result.rewrite_replacements or result.rewritten_files:
+        lines.append(f"Image rewrite replacements: {result.rewrite_replacements}")
+        lines.extend(f"  - {path}" for path in result.rewritten_files)
     return "\n".join(lines) + "\n"
 
 

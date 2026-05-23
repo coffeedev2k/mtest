@@ -5,8 +5,10 @@ import tarfile
 
 import pytest
 
+import chartpatch.workflow as workflow
 from chartpatch.config import validate_config
 from chartpatch.images import ImageTargetMapping
+from chartpatch.rewrite import ImageRewriteError
 from chartpatch.runner import CommandResult
 from chartpatch.workflow import SyncWorkflowError, render_sync_report, run_sync
 
@@ -63,6 +65,7 @@ class StubRunner:
         self.archive_chart_dir = archive_chart_dir
         self.calls: list[tuple[str, ...]] = []
         self.cwd_by_call: list[Path | None] = []
+        self.template_call_count = 0
 
     def run(self, args: list[str], *, cwd: Path | None = None) -> CommandResult:
         call = tuple(args)
@@ -84,12 +87,15 @@ class StubRunner:
                 )
             return self.pull_result or CommandResult(call, 0, "pulled\n", "")
         if args[:2] == ["helm", "template"]:
-            return self.template_result or CommandResult(
-                call,
-                0,
-                ORIGINAL_RENDER_WITH_IMAGES,
-                "",
-            )
+            self.template_call_count += 1
+            if self.template_call_count == 1:
+                return self.template_result or CommandResult(
+                    call,
+                    0,
+                    ORIGINAL_RENDER_WITH_IMAGES,
+                    "",
+                )
+            raise AssertionError("unexpected second helm template call")
         if args[:2] == ["skopeo", "copy"]:
             if self.skopeo_results:
                 return self.skopeo_results.pop(0)
@@ -150,6 +156,27 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         ),
     )
     assert result.applied_patch_file == tmp_path / "patches/kube-prometheus-stack.patch"
+    assert result.rewrite_replacements == 2
+    assert result.rewritten_files == (Path("values.yaml"),)
+    assert tuple(
+        (rewrite.source, rewrite.target, rewrite.replacements)
+        for rewrite in result.image_rewrites
+    ) == (
+        (
+            "docker.io/bitnami/nginx:1.27.4",
+            "localhost:5000/docker.io/bitnami/nginx:1.27.4",
+            1,
+        ),
+        (
+            "registry.example.com/setup:1.0.0",
+            "localhost:5000/registry.example.com/setup:1.0.0",
+            1,
+        ),
+    )
+    assert (result.unpacked_chart_path / "values.yaml").read_text(encoding="utf-8") == (
+        "appImage: localhost:5000/docker.io/bitnami/nginx:1.27.4\n"
+        "setupImage: localhost:5000/registry.example.com/setup:1.0.0\n"
+    )
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
         ("helm", "template"),
@@ -203,7 +230,7 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "docker://registry.example.com/setup:1.0.0",
         "docker://localhost:5000/registry.example.com/setup:1.0.0",
     )
-    assert runner.calls[4:] == [
+    assert runner.calls[4:10] == [
         ("git", "init"),
         ("git", "config", "user.name", "ChartPatch"),
         ("git", "config", "user.email", "chartpatch@example.invalid"),
@@ -211,7 +238,7 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         ("git", "commit", "-m", "Baseline upstream chart"),
         ("git", "am", "--reject", str(tmp_path / "patches/kube-prometheus-stack.patch")),
     ]
-    assert runner.cwd_by_call[4:] == [result.unpacked_chart_path] * 6
+    assert runner.cwd_by_call[4:10] == [result.unpacked_chart_path] * 6
 
     report = render_sync_report(result)
     assert "Source chart repo: https://prometheus-community.github.io/helm-charts" in report
@@ -243,9 +270,22 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "localhost:5000/registry.example.com/setup:1.0.0"
     ) in report
     assert f"Applied patch: {tmp_path / 'patches/kube-prometheus-stack.patch'}" in report
+    assert "Image rewrites: 2" in report
+    assert (
+        "  - docker.io/bitnami/nginx:1.27.4 -> "
+        "localhost:5000/docker.io/bitnami/nginx:1.27.4 (1 replacements)"
+    ) in report
+    assert (
+        "  - registry.example.com/setup:1.0.0 -> "
+        "localhost:5000/registry.example.com/setup:1.0.0 (1 replacements)"
+    ) in report
+    assert "Image rewrite replacements: 2" in report
+    assert "  - values.yaml" in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
     assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
     assert report.index("Mirrored images: 2") < report.index("Applied patch:")
+    assert report.index("Applied patch:") < report.index("Image rewrites: 2")
+    assert report.index("Image rewrites: 2") < report.index("Image rewrite replacements: 2")
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:
@@ -259,6 +299,7 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
     assert "helm template kube-prometheus-stack" in (
         logs_dir / "helm-template-original.args.txt"
     ).read_text(encoding="utf-8")
+    assert not (logs_dir / "helm-template-patched.args.txt").exists()
     assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
         logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
@@ -413,6 +454,77 @@ def test_sync_fails_when_original_render_contains_no_images(tmp_path: Path) -> N
     ]
 
 
+def test_sync_rewrite_stage_receives_original_image_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_mappings: list[tuple[ImageTargetMapping, ...]] = []
+    original_rewrite = workflow.rewrite_chart_images
+
+    def capture_rewrite(chart_dir: Path, mappings: tuple[ImageTargetMapping, ...]):
+        captured_mappings.append(mappings)
+        return original_rewrite(chart_dir, mappings)
+
+    monkeypatch.setattr(workflow, "rewrite_chart_images", capture_rewrite)
+
+    result = run_sync(
+        validate_config(VALID_CONFIG),
+        repo_root=tmp_path,
+        runner=StubRunner(tmp_path),
+    )
+
+    assert captured_mappings == [
+        (
+            ImageTargetMapping(
+                source="docker.io/bitnami/nginx:1.27.4",
+                target="localhost:5000/docker.io/bitnami/nginx:1.27.4",
+            ),
+            ImageTargetMapping(
+                source="registry.example.com/setup:1.0.0",
+                target="localhost:5000/registry.example.com/setup:1.0.0",
+            ),
+        )
+    ]
+    assert result.rewrite_replacements == 2
+
+
+def test_sync_fails_when_rewrite_stage_fails_after_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = StubRunner(tmp_path)
+
+    def fail_rewrite(chart_dir: Path, mappings: tuple[ImageTargetMapping, ...]):
+        raise ImageRewriteError(
+            f"image rewrite failed while writing {chart_dir / 'values.yaml'}: boom"
+        )
+
+    monkeypatch.setattr(workflow, "rewrite_chart_images", fail_rewrite)
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "image rewrite failed while writing" in message
+    assert "boom" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+    ]
+    assert all(
+        call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
+
+
 def test_sync_fails_when_downloaded_archive_is_missing(tmp_path: Path) -> None:
     runner = StubRunner(tmp_path, create_archive=False)
 
@@ -467,6 +579,11 @@ def _write_chart_archive(archive_path: Path, tmp_path: Path, chart_dir_name: str
     chart_root.mkdir(parents=True, exist_ok=True)
     (chart_root / "Chart.yaml").write_text(
         f"name: {chart_dir_name}\nversion: 1.0.0\n",
+        encoding="utf-8",
+    )
+    (chart_root / "values.yaml").write_text(
+        "appImage: docker.io/bitnami/nginx:1.27.4\n"
+        "setupImage: registry.example.com/setup:1.0.0\n",
         encoding="utf-8",
     )
     with tarfile.open(archive_path, "w:gz") as archive:
