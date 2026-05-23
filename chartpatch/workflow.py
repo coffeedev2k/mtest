@@ -21,6 +21,7 @@ from .rewrite import (
     ImageRewriteVerificationError,
     rewrite_chart_images,
     verify_image_mapping_complete,
+    verify_patched_rendered_images,
 )
 from .runner import CommandResult, CommandRunner
 
@@ -32,6 +33,7 @@ SYNC_STAGE_NAMES = (
     "mirror images",
     "apply patch",
     "rewrite images",
+    "verify patched render",
 )
 
 
@@ -83,6 +85,7 @@ class SyncWorkspace:
     unpacked_root: Path
     expected_chart_dir: Path
     original_render_path: Path
+    patched_render_path: Path
     logs_dir: Path
 
 
@@ -96,6 +99,8 @@ class SyncResult:
     unpacked_chart_path: Path
     original_render_path: Path
     discovered_images: tuple[str, ...]
+    patched_render_path: Path | None = None
+    final_rendered_images: tuple[str, ...] = ()
     image_target_mappings: tuple[ImageTargetMapping, ...] = ()
     mirrored_images: tuple[MirroredImage, ...] = ()
     applied_patch_file: Path | None = None
@@ -208,6 +213,45 @@ def run_sync(
     except ImageRewriteError as exc:
         raise SyncWorkflowError(str(exc)) from None
 
+    patched_template_result = command_runner.run(
+        [
+            "helm",
+            "template",
+            config.chart.name,
+            str(unpacked_chart),
+        ]
+    )
+    _write_command_logs(
+        workspace.logs_dir,
+        "helm-template-patched",
+        patched_template_result,
+    )
+    if patched_template_result.returncode != 0:
+        raise SyncWorkflowError(
+            _format_command_failure(
+                "patched helm template failed",
+                patched_template_result,
+            )
+        )
+
+    workspace.patched_render_path.write_text(
+        patched_template_result.stdout,
+        encoding="utf-8",
+    )
+    try:
+        patched_images = discover_manifest_images(patched_template_result.stdout)
+    except ManifestImageDiscoveryError as exc:
+        raise SyncWorkflowError(f"patched render image discovery failed: {exc}") from None
+    try:
+        final_rendered_images = verify_patched_rendered_images(
+            discovered_images,
+            image_target_mappings,
+            patched_images,
+            config.registry.url,
+        )
+    except ImageRewriteVerificationError as exc:
+        raise SyncWorkflowError(str(exc)) from None
+
     return SyncResult(
         source_repo=config.chart.source.repo,
         source_chart=config.chart.source.chart,
@@ -216,7 +260,9 @@ def run_sync(
         chart_archive_path=chart_archive,
         unpacked_chart_path=unpacked_chart,
         original_render_path=workspace.original_render_path,
+        patched_render_path=workspace.patched_render_path,
         discovered_images=discovered_images,
+        final_rendered_images=final_rendered_images,
         image_target_mappings=image_target_mappings,
         mirrored_images=mirrored_images,
         applied_patch_file=applied_patch.patch_file,
@@ -252,6 +298,7 @@ def create_sync_workspace(
         unpacked_root=unpacked_root,
         expected_chart_dir=unpacked_root / chart_dir_name,
         original_render_path=render_dir / "original.yaml",
+        patched_render_path=render_dir / "patched.yaml",
         logs_dir=logs_dir,
     )
 
@@ -293,6 +340,11 @@ def render_sync_report(result: SyncResult) -> str:
     if result.rewrite_replacements or result.rewritten_files:
         lines.append(f"Image rewrite replacements: {result.rewrite_replacements}")
         lines.extend(f"  - {path}" for path in result.rewritten_files)
+    if result.patched_render_path is not None:
+        lines.append(f"Patched render output: {result.patched_render_path}")
+        lines.append("Patched render verification: passed")
+        lines.append(f"Final rendered images: {len(result.final_rendered_images)}")
+        lines.extend(f"  - {image}" for image in result.final_rendered_images)
     return "\n".join(lines) + "\n"
 
 

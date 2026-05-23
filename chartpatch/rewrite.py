@@ -131,6 +131,49 @@ def verify_image_mapping_complete(
     return tuple(mappings_by_source[image] for image in sorted(set(discovered_images)))
 
 
+def verify_patched_rendered_images(
+    original_images: tuple[str, ...],
+    mappings: tuple[ImageTargetMapping, ...],
+    patched_images: tuple[str, ...],
+    registry_url: str,
+) -> tuple[str, ...]:
+    """Verify patched rendered manifests only reference expected local images."""
+    expected_mappings = verify_image_mapping_complete(original_images, mappings)
+    expected_targets = {mapping.target for mapping in expected_mappings}
+    patched_image_set = set(patched_images)
+    registry_prefix = f"{registry_url.rstrip('/')}/"
+
+    missing_targets = tuple(sorted(expected_targets - patched_image_set))
+    leaked_sources = tuple(sorted(set(original_images) & patched_image_set))
+    non_local_images = tuple(
+        sorted(image for image in patched_image_set if not image.startswith(registry_prefix))
+    )
+
+    failures: list[str] = []
+    if missing_targets:
+        failures.append(
+            "missing local targets\n"
+            + "\n".join(f"  - {image}" for image in missing_targets)
+        )
+    if leaked_sources:
+        failures.append(
+            "leaked upstream images\n"
+            + "\n".join(f"  - {image}" for image in leaked_sources)
+        )
+    if non_local_images:
+        failures.append(
+            "non-local rendered images\n"
+            + "\n".join(f"  - {image}" for image in non_local_images)
+        )
+
+    if failures:
+        raise ImageRewriteVerificationError(
+            "patched render image verification failed: " + "\n".join(failures)
+        )
+
+    return tuple(sorted(patched_image_set))
+
+
 def _is_rewrite_candidate(path: Path, chart_dir: Path) -> bool:
     relative = _relative_to(path, chart_dir)
     if ".git" in relative.parts:

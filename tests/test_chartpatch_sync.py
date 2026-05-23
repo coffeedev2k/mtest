@@ -41,6 +41,19 @@ spec:
           image: docker.io/bitnami/nginx:1.27.4
 """
 
+PATCHED_RENDER_WITH_LOCAL_IMAGES = """apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: setup
+          image: localhost:5000/registry.example.com/setup:1.0.0
+      containers:
+        - name: app
+          image: localhost:5000/docker.io/bitnami/nginx:1.27.4
+"""
+
 
 class StubRunner:
     def __init__(
@@ -49,6 +62,7 @@ class StubRunner:
         *,
         pull_result: CommandResult | None = None,
         template_result: CommandResult | None = None,
+        patched_template_result: CommandResult | None = None,
         skopeo_results: tuple[CommandResult, ...] = (),
         git_am_result: CommandResult | None = None,
         create_archive: bool = True,
@@ -58,6 +72,7 @@ class StubRunner:
         self.tmp_path = tmp_path
         self.pull_result = pull_result
         self.template_result = template_result
+        self.patched_template_result = patched_template_result
         self.skopeo_results = list(skopeo_results)
         self.git_am_result = git_am_result
         self.create_archive = create_archive
@@ -95,7 +110,14 @@ class StubRunner:
                     ORIGINAL_RENDER_WITH_IMAGES,
                     "",
                 )
-            raise AssertionError("unexpected second helm template call")
+            if self.template_call_count == 2:
+                return self.patched_template_result or CommandResult(
+                    call,
+                    0,
+                    PATCHED_RENDER_WITH_LOCAL_IMAGES,
+                    "",
+                )
+            raise AssertionError("unexpected extra helm template call")
         if args[:2] == ["skopeo", "copy"]:
             if self.skopeo_results:
                 return self.skopeo_results.pop(0)
@@ -131,9 +153,15 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     )
     assert result.original_render_path == result.workspace_path / "rendered" / "original.yaml"
     assert result.original_render_path.read_text(encoding="utf-8") == ORIGINAL_RENDER_WITH_IMAGES
+    assert result.patched_render_path == result.workspace_path / "rendered" / "patched.yaml"
+    assert result.patched_render_path.read_text(encoding="utf-8") == PATCHED_RENDER_WITH_LOCAL_IMAGES
     assert result.discovered_images == (
         "docker.io/bitnami/nginx:1.27.4",
         "registry.example.com/setup:1.0.0",
+    )
+    assert result.final_rendered_images == (
+        "localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        "localhost:5000/registry.example.com/setup:1.0.0",
     )
     assert result.image_target_mappings == (
         ImageTargetMapping(
@@ -188,6 +216,7 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         ("git", "add"),
         ("git", "commit"),
         ("git", "am"),
+        ("helm", "template"),
     ]
     assert all(
         call[:2]
@@ -213,6 +242,13 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     )
     template_args = runner.calls[1]
     assert template_args == (
+        "helm",
+        "template",
+        "kube-prometheus-stack",
+        str(result.unpacked_chart_path),
+    )
+    patched_template_args = runner.calls[10]
+    assert patched_template_args == (
         "helm",
         "template",
         "kube-prometheus-stack",
@@ -281,11 +317,19 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     ) in report
     assert "Image rewrite replacements: 2" in report
     assert "  - values.yaml" in report
+    assert f"Patched render output: {result.patched_render_path}" in report
+    assert "Patched render verification: passed" in report
+    assert "Final rendered images: 2" in report
+    assert "  - localhost:5000/docker.io/bitnami/nginx:1.27.4" in report
+    assert "  - localhost:5000/registry.example.com/setup:1.0.0" in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
     assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
     assert report.index("Mirrored images: 2") < report.index("Applied patch:")
     assert report.index("Applied patch:") < report.index("Image rewrites: 2")
     assert report.index("Image rewrites: 2") < report.index("Image rewrite replacements: 2")
+    assert report.index("Image rewrite replacements: 2") < report.index(
+        "Patched render verification: passed"
+    )
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:
@@ -299,7 +343,13 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
     assert "helm template kube-prometheus-stack" in (
         logs_dir / "helm-template-original.args.txt"
     ).read_text(encoding="utf-8")
-    assert not (logs_dir / "helm-template-patched.args.txt").exists()
+    assert "helm template kube-prometheus-stack" in (
+        logs_dir / "helm-template-patched.args.txt"
+    ).read_text(encoding="utf-8")
+    assert (
+        logs_dir / "helm-template-patched.stdout.txt"
+    ).read_text(encoding="utf-8") == PATCHED_RENDER_WITH_LOCAL_IMAGES
+    assert (logs_dir / "helm-template-patched.stderr.txt").read_text(encoding="utf-8") == ""
     assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
         logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
@@ -519,6 +569,79 @@ def test_sync_fails_when_rewrite_stage_fails_after_patch(
         ("git", "commit"),
         ("git", "am"),
     ]
+    assert all(
+        call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
+
+
+def test_sync_fails_when_patched_helm_template_fails(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        patched_template_result=CommandResult(
+            ("helm", "template"),
+            17,
+            "patched stdout\n",
+            "patched stderr\n",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "patched helm template failed" in message
+    assert "exited with code 17" in message
+    assert "patched stdout" in message
+    assert "patched stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+        ("helm", "template"),
+    ]
+    assert all(
+        call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
+
+
+def test_sync_fails_when_patched_render_verification_fails(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        patched_template_result=CommandResult(
+            ("helm", "template"),
+            0,
+            """apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: docker.io/bitnami/nginx:1.27.4
+""",
+            "",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "patched render image verification failed" in message
+    assert "missing local targets" in message
+    assert "localhost:5000/docker.io/bitnami/nginx:1.27.4" in message
+    assert "localhost:5000/registry.example.com/setup:1.0.0" in message
+    assert "leaked upstream images" in message
+    assert "docker.io/bitnami/nginx:1.27.4" in message
     assert all(
         call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
         for call in runner.calls

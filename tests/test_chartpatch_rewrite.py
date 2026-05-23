@@ -10,6 +10,7 @@ from chartpatch.rewrite import (
     ImageRewriteVerificationError,
     rewrite_chart_images,
     verify_image_mapping_complete,
+    verify_patched_rendered_images,
 )
 
 
@@ -252,6 +253,111 @@ def test_verification_fails_when_image_mapping_is_incomplete() -> None:
     message = str(exc_info.value)
     assert "missing target mappings" in message
     assert "registry.example.com/setup:2.0" in message
+
+
+def test_patched_render_verification_passes_for_expected_local_targets() -> None:
+    final_images = verify_patched_rendered_images(
+        ("docker.io/example/app:1.0", "registry.example.com/setup:2.0"),
+        (
+            ImageTargetMapping(
+                source="docker.io/example/app:1.0",
+                target="localhost:5000/docker.io/example/app:1.0",
+            ),
+            ImageTargetMapping(
+                source="registry.example.com/setup:2.0",
+                target="localhost:5000/registry.example.com/setup:2.0",
+            ),
+        ),
+        (
+            "localhost:5000/docker.io/example/app:1.0",
+            "localhost:5000/registry.example.com/setup:2.0",
+        ),
+        "localhost:5000",
+    )
+
+    assert final_images == (
+        "localhost:5000/docker.io/example/app:1.0",
+        "localhost:5000/registry.example.com/setup:2.0",
+    )
+
+
+def test_patched_render_verification_fails_when_local_target_is_missing() -> None:
+    with pytest.raises(ImageRewriteVerificationError) as exc_info:
+        verify_patched_rendered_images(
+            ("docker.io/example/app:1.0",),
+            (
+                ImageTargetMapping(
+                    source="docker.io/example/app:1.0",
+                    target="localhost:5000/docker.io/example/app:1.0",
+                ),
+            ),
+            ("localhost:5000/docker.io/example/other:1.0",),
+            "localhost:5000",
+        )
+
+    message = str(exc_info.value)
+    assert "missing local targets" in message
+    assert "localhost:5000/docker.io/example/app:1.0" in message
+
+
+def test_patched_render_verification_fails_when_upstream_image_leaks() -> None:
+    with pytest.raises(ImageRewriteVerificationError) as exc_info:
+        verify_patched_rendered_images(
+            ("docker.io/example/app:1.0",),
+            (
+                ImageTargetMapping(
+                    source="docker.io/example/app:1.0",
+                    target="localhost:5000/docker.io/example/app:1.0",
+                ),
+            ),
+            (
+                "docker.io/example/app:1.0",
+                "localhost:5000/docker.io/example/app:1.0",
+            ),
+            "localhost:5000",
+        )
+
+    message = str(exc_info.value)
+    assert "leaked upstream images" in message
+    assert "docker.io/example/app:1.0" in message
+
+
+def test_patched_render_verification_fails_when_rendered_image_is_not_local() -> None:
+    with pytest.raises(ImageRewriteVerificationError) as exc_info:
+        verify_patched_rendered_images(
+            ("docker.io/example/app:1.0",),
+            (
+                ImageTargetMapping(
+                    source="docker.io/example/app:1.0",
+                    target="localhost:5000/docker.io/example/app:1.0",
+                ),
+            ),
+            (
+                "localhost:5000/docker.io/example/app:1.0",
+                "quay.io/example/sidecar:2.0",
+            ),
+            "localhost:5000/",
+        )
+
+    message = str(exc_info.value)
+    assert "non-local rendered images" in message
+    assert "quay.io/example/sidecar:2.0" in message
+
+
+def test_patched_render_verification_uses_exact_upstream_image_comparison() -> None:
+    final_images = verify_patched_rendered_images(
+        ("docker.io/example/app:1.0",),
+        (
+            ImageTargetMapping(
+                source="docker.io/example/app:1.0",
+                target="localhost:5000/docker.io/example/app:1.0",
+            ),
+        ),
+        ("localhost:5000/docker.io/example/app:1.0",),
+        "localhost:5000",
+    )
+
+    assert final_images == ("localhost:5000/docker.io/example/app:1.0",)
 
 
 def _write_chart(tmp_path: Path) -> Path:

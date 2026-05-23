@@ -31,3 +31,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/020/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/021
   - commit: 1c6d358
+- Task cycle 1: Task: Add Patched Chart Image Rewrite
+  - task_file: /home/atarasov/l/mtest/runs/024/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/025
+  - commit: 7eb7efd
