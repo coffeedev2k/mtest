@@ -47,6 +47,7 @@ class StubRunner:
         *,
         pull_result: CommandResult | None = None,
         template_result: CommandResult | None = None,
+        skopeo_results: tuple[CommandResult, ...] = (),
         create_archive: bool = True,
         extra_archive: bool = False,
         archive_chart_dir: str = "kube-prometheus-stack",
@@ -54,6 +55,7 @@ class StubRunner:
         self.tmp_path = tmp_path
         self.pull_result = pull_result
         self.template_result = template_result
+        self.skopeo_results = list(skopeo_results)
         self.create_archive = create_archive
         self.extra_archive = extra_archive
         self.archive_chart_dir = archive_chart_dir
@@ -84,6 +86,10 @@ class StubRunner:
                 ORIGINAL_RENDER_WITH_IMAGES,
                 "",
             )
+        if args[:2] == ["skopeo", "copy"]:
+            if self.skopeo_results:
+                return self.skopeo_results.pop(0)
+            return CommandResult(call, 0, "copied\n", "")
         raise AssertionError(f"unexpected command: {args}")
 
 
@@ -117,16 +123,30 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
             target="localhost:5000/registry.example.com/setup:1.0.0",
         ),
     )
+    assert tuple((image.source, image.target) for image in result.mirrored_images) == (
+        (
+            "docker.io/bitnami/nginx:1.27.4",
+            "localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+        (
+            "registry.example.com/setup:1.0.0",
+            "localhost:5000/registry.example.com/setup:1.0.0",
+        ),
+    )
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
         ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
     ]
     assert all(
-        call[:2] not in {("skopeo", "copy"), ("git", "apply")}
-        for call in runner.calls
-    )
-    assert all(
-        call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
+        call[:2]
+        not in {
+            ("git", "apply"),
+            ("helm", "lint"),
+            ("helm", "package"),
+            ("helm", "push"),
+        }
         for call in runner.calls
     )
 
@@ -149,6 +169,18 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "kube-prometheus-stack",
         str(result.unpacked_chart_path),
     )
+    assert runner.calls[2] == (
+        "skopeo",
+        "copy",
+        "docker://docker.io/bitnami/nginx:1.27.4",
+        "docker://localhost:5000/docker.io/bitnami/nginx:1.27.4",
+    )
+    assert runner.calls[3] == (
+        "skopeo",
+        "copy",
+        "docker://registry.example.com/setup:1.0.0",
+        "docker://localhost:5000/registry.example.com/setup:1.0.0",
+    )
 
     report = render_sync_report(result)
     assert "Source chart repo: https://prometheus-community.github.io/helm-charts" in report
@@ -170,7 +202,17 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "  - registry.example.com/setup:1.0.0 -> "
         "localhost:5000/registry.example.com/setup:1.0.0"
     ) in report
+    assert "Mirrored images: 2" in report
+    assert (
+        "  - docker.io/bitnami/nginx:1.27.4 -> "
+        "localhost:5000/docker.io/bitnami/nginx:1.27.4"
+    ) in report
+    assert (
+        "  - registry.example.com/setup:1.0.0 -> "
+        "localhost:5000/registry.example.com/setup:1.0.0"
+    ) in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
+    assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:
@@ -183,6 +225,9 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
     ).read_text(encoding="utf-8")
     assert "helm template kube-prometheus-stack" in (
         logs_dir / "helm-template-original.args.txt"
+    ).read_text(encoding="utf-8")
+    assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
+        logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
 
 
@@ -230,6 +275,41 @@ def test_sync_fails_when_helm_template_fails(tmp_path: Path) -> None:
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
         ("helm", "template"),
+    ]
+
+
+def test_sync_fails_when_skopeo_copy_fails_and_skips_later_images(tmp_path: Path) -> None:
+    failed_copy = CommandResult(
+        (
+            "skopeo",
+            "copy",
+            "docker://docker.io/bitnami/nginx:1.27.4",
+            "docker://localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+        9,
+        "copy stdout\n",
+        "copy stderr\n",
+    )
+    runner = StubRunner(tmp_path, skopeo_results=(failed_copy,))
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "image mirror failed" in message
+    assert "source image: docker.io/bitnami/nginx:1.27.4" in message
+    assert "target image: localhost:5000/docker.io/bitnami/nginx:1.27.4" in message
+    assert (
+        "command: skopeo copy docker://docker.io/bitnami/nginx:1.27.4 "
+        "docker://localhost:5000/docker.io/bitnami/nginx:1.27.4"
+    ) in message
+    assert "exit status: 9" in message
+    assert "copy stdout" in message
+    assert "copy stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
     ]
 
 

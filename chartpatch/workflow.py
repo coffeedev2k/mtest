@@ -13,6 +13,7 @@ from .images import (
     discover_manifest_images,
     map_image_targets,
 )
+from .mirror import ImageMirrorError, MirroredImage, mirror_image_mappings
 from .runner import CommandResult, CommandRunner
 
 
@@ -91,6 +92,7 @@ class SyncResult:
     original_render_path: Path
     discovered_images: tuple[str, ...]
     image_target_mappings: tuple[ImageTargetMapping, ...] = ()
+    mirrored_images: tuple[MirroredImage, ...] = ()
 
 
 class SyncWorkflowError(RuntimeError):
@@ -164,6 +166,19 @@ def run_sync(
             "image target mapping failed: expected exactly one target per discovered image"
         )
 
+    try:
+        mirrored_images = mirror_image_mappings(
+            image_target_mappings,
+            command_runner,
+            on_result=lambda index, mapping, result: _write_command_logs(
+                workspace.logs_dir,
+                f"skopeo-copy-{index}",
+                result,
+            ),
+        )
+    except ImageMirrorError as exc:
+        raise SyncWorkflowError(str(exc)) from None
+
     return SyncResult(
         source_repo=config.chart.source.repo,
         source_chart=config.chart.source.chart,
@@ -174,6 +189,7 @@ def run_sync(
         original_render_path=workspace.original_render_path,
         discovered_images=discovered_images,
         image_target_mappings=image_target_mappings,
+        mirrored_images=mirrored_images,
     )
 
 
@@ -225,6 +241,11 @@ def render_sync_report(result: SyncResult) -> str:
         lines.extend(
             f"  - {mapping.source} -> {mapping.target}"
             for mapping in result.image_target_mappings
+        )
+    if result.mirrored_images:
+        lines.append(f"Mirrored images: {len(result.mirrored_images)}")
+        lines.extend(
+            f"  - {image.source} -> {image.target}" for image in result.mirrored_images
         )
     return "\n".join(lines) + "\n"
 

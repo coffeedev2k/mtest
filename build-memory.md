@@ -19,3 +19,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/014/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/015
   - commit: 77f4732
+- Task cycle 4: Task: Add Deterministic Image Target Mapping
+  - task_file: /home/atarasov/l/mtest/runs/016/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/017
+  - commit: a13dcf0
