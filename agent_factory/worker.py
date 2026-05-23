@@ -25,11 +25,12 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = args.run.resolve()
     config = load_factory_config(run_dir / "input" / "factory.yaml")
     queue_file = run_dir / "queue.json"
+    locks_file = run_dir / "locks.json"
     events_file = run_dir / "logs" / "events.jsonl"
     worker_id = f"{args.role}-{socket.gethostname()}"
 
     append_event(events_file, "worker_started", {"role": args.role, "worker_id": worker_id})
-    claimed = claim_next_job(queue_file, args.role, worker_id)
+    claimed = claim_next_job(queue_file, args.role, worker_id, locks_file=locks_file)
     if claimed is None:
         append_event(events_file, "worker_idle", {"role": args.role, "worker_id": worker_id})
         return 0
@@ -47,16 +48,16 @@ def main(argv: list[str] | None = None) -> int:
     missing_outputs = [output for output in job["expected_outputs"] if not (run_dir / output).exists()]
     if result.returncode != 0:
         error = f"backend exited with {result.returncode}"
-        fail_job(queue_file, job["id"], error)
+        fail_job(queue_file, job["id"], error, locks_file=locks_file)
         append_event(events_file, "job_failed", {"job_id": job["id"], "error": error})
         return result.returncode
     if missing_outputs:
         error = f"missing outputs: {', '.join(missing_outputs)}"
-        fail_job(queue_file, job["id"], error)
+        fail_job(queue_file, job["id"], error, locks_file=locks_file)
         append_event(events_file, "job_failed", {"job_id": job["id"], "error": error})
         return 1
 
-    complete_job(queue_file, job["id"])
+    complete_job(queue_file, job["id"], locks_file=locks_file)
     append_event(events_file, "job_passed", {"job_id": job["id"], "role": args.role})
     return 0
 

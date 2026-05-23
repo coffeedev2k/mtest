@@ -222,6 +222,70 @@ def run_task(task_path: Path, config_path: Path) -> DryRunResult:
     return result
 
 
+def run_parallel_tasks(task_paths: list[Path], config_path: Path) -> DryRunResult:
+    if not task_paths:
+        raise ValueError("at least one task file is required")
+    config_path = config_path.resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"factory config not found: {config_path}")
+    config = load_factory_config(config_path)
+    repo_root = config_path.parent
+    run_dir = _next_run_dir(repo_root / config.run_root)
+    _create_run_layout(run_dir)
+    (run_dir / "input" / "tasks").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(config_path, run_dir / "input" / config_path.name)
+
+    copied_tasks = []
+    for index, task_path in enumerate(task_paths, start=1):
+        task_path = task_path.resolve()
+        if not task_path.is_file():
+            raise FileNotFoundError(f"task file not found: {task_path}")
+        target = run_dir / "input" / "tasks" / f"{index:03d}-{task_path.name}"
+        shutil.copy2(task_path, target)
+        copied_tasks.append(target)
+
+    state = {
+        "run_id": run_dir.name,
+        "status": "running",
+        "tasks": [str(path) for path in copied_tasks],
+        "config": str(run_dir / "input" / config_path.name),
+        "created_at": _now(),
+        "runtime": config.runtime,
+        "backend": config.backend,
+        "worker_topology": _worker_topology(config),
+    }
+    queue = {
+        "status": "running",
+        "jobs": _parallel_implementation_jobs(copied_tasks),
+    }
+    locks = {
+        "write_scopes": {},
+        "leases": {},
+    }
+    result = DryRunResult(
+        run_dir=run_dir,
+        state_file=run_dir / "state.json",
+        queue_file=run_dir / "queue.json",
+        locks_file=run_dir / "locks.json",
+        events_file=run_dir / "logs" / "events.jsonl",
+    )
+    write_json(result.state_file, state)
+    write_json(result.queue_file, queue)
+    write_json(result.locks_file, locks)
+    append_event(result.events_file, "run_created", {"run_id": run_dir.name, "status": "running"})
+    _progress(result, f"created parallel task run {run_dir.name}")
+    _run_worker_pool(result, repo_root, config, "implementer")
+
+    queue = read_json(result.queue_file)
+    state = read_json(result.state_file)
+    state["status"] = "parallel_implementation_gate"
+    state["queue_status"] = "passed" if all(job.get("status") == "passed" for job in queue["jobs"]) else "incomplete"
+    write_json(result.state_file, state)
+    append_event(result.events_file, "run_paused_at_gate", {"gate": state["status"]})
+    _progress(result, "paused at parallel_implementation_gate")
+    return result
+
+
 def build_feature(
     feature_path: Path,
     config_path: Path,
@@ -313,6 +377,59 @@ def _run_worker_process(result: DryRunResult, repo_root: Path, config: FactoryCo
         _progress(result, f"{role} worker failed with exit code {process.returncode}")
         raise RuntimeError(f"{role} worker failed with exit code {process.returncode}")
     _progress(result, f"{role} worker finished")
+
+
+def _run_worker_pool(result: DryRunResult, repo_root: Path, config: FactoryConfig, role: str) -> None:
+    agent = _agent_config(config, role)
+    while _has_queued_role(result.queue_file, role):
+        processes = []
+        for _ in range(agent.concurrency):
+            if not _has_queued_role(result.queue_file, role):
+                break
+            command = [
+                sys.executable,
+                "-m",
+                "agent_factory.worker",
+                "--role",
+                role,
+                "--run",
+                str(result.run_dir),
+                "--repo",
+                str(repo_root),
+                "--once",
+            ]
+            _progress(result, f"starting parallel {role} worker with timeout {agent.timeout_seconds}s")
+            append_event(result.events_file, "worker_process_starting", {"role": role, "command": command})
+            processes.append(
+                subprocess.Popen(
+                    command,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+            )
+        for process in processes:
+            try:
+                stdout, stderr = process.communicate(timeout=agent.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    stdout, stderr = process.communicate()
+                _write_worker_logs(result, f"{role}-{process.pid}", stdout, stderr)
+                _mark_blocked(result, role, f"{role} worker exceeded timeout of {agent.timeout_seconds}s")
+                return
+            _write_worker_logs(result, f"{role}-{process.pid}", stdout, stderr)
+            append_event(result.events_file, "worker_process_finished", {"role": role, "returncode": process.returncode})
+            if process.returncode != 0:
+                state = read_json(result.state_file)
+                state["status"] = "failed"
+                state["failed_role"] = role
+                write_json(result.state_file, state)
+                raise RuntimeError(f"{role} worker failed with exit code {process.returncode}")
 
 
 def _next_run_dir(run_root: Path) -> Path:
@@ -422,6 +539,25 @@ def _task_execution_jobs() -> list[dict[str, Any]]:
     ]
 
 
+def _parallel_implementation_jobs(task_paths: list[Path]) -> list[dict[str, Any]]:
+    jobs = []
+    for index, task_path in enumerate(task_paths, start=1):
+        jobs.append(
+            {
+                "id": f"job-impl-{index:03d}",
+                "role": "implementer",
+                "status": "queued",
+                "depends_on": [],
+                "input_artifacts": [str(task_path.relative_to(task_path.parents[2])), "input/factory.yaml"],
+                "expected_outputs": [f"implementation-reports/{task_path.stem}.md"],
+                "write_scope": _extract_write_scope(task_path),
+                "lease_owner": None,
+                "attempt": 0,
+            }
+        )
+    return jobs
+
+
 def _fix_job(loop_index: int, failed_role: str) -> dict[str, Any]:
     job_id = f"job-fix-{loop_index:03d}"
     return {
@@ -498,6 +634,29 @@ def _ensure_queued_role(queue_file: Path, role: str) -> None:
     job_id = f"job-{len(queue.get('jobs', [])) + 1:03d}"
     queue["jobs"].append(_retry_job(role, job_id))
     write_json(queue_file, queue)
+
+
+def _has_queued_role(queue_file: Path, role: str) -> bool:
+    queue = read_json(queue_file)
+    return any(job.get("role") == role and job.get("status") == "queued" for job in queue.get("jobs", []))
+
+
+def _extract_write_scope(task_path: Path) -> list[str]:
+    lines = task_path.read_text(encoding="utf-8").splitlines()
+    in_scope = False
+    scopes = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower() == "## write scope":
+            in_scope = True
+            continue
+        if in_scope and stripped.startswith("## "):
+            break
+        if in_scope and stripped.startswith("-"):
+            value = stripped[1:].strip().strip("`")
+            if value:
+                scopes.append(value)
+    return scopes
 
 
 def _report_passed(path: Path) -> bool:

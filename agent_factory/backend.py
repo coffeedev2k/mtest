@@ -37,7 +37,7 @@ def run_backend(
 
 
 def _run_fake_backend(role: str, job: dict[str, Any]) -> BackendResult:
-    output_name = _role_output_name(role)
+    output_name = _role_output_name(role, job)
     content = "\n".join(
         [
             f"# {role.replace('_', ' ').title()}",
@@ -58,12 +58,6 @@ def _run_fake_backend(role: str, job: dict[str, Any]) -> BackendResult:
                 "",
             ]
         )
-    if role == "implementer":
-        output_name = "implementation-report.md"
-    if role == "reviewer":
-        output_name = "review-report.md"
-    if role == "tester":
-        output_name = "test-report.md"
     return BackendResult(
         returncode=0,
         stdout=f"fake backend generated {output_name}\n",
@@ -137,7 +131,7 @@ def _run_codex_exec(
     completed = subprocess.run(command, text=True, capture_output=True)
     outputs = {}
     if completed.returncode == 0 and output_capture.exists():
-        outputs[_role_output_name(role)] = output_capture.read_text(encoding="utf-8")
+        outputs[_role_output_name(role, job)] = output_capture.read_text(encoding="utf-8")
     return BackendResult(
         returncode=completed.returncode,
         stdout=completed.stdout,
@@ -149,6 +143,7 @@ def _run_codex_exec(
 def _render_prompt(repo_root: Path, run_dir: Path, role: str, job: dict[str, Any]) -> str:
     prompt_path = repo_root / "agents" / f"{role.replace('_', '-')}.md"
     template = prompt_path.read_text(encoding="utf-8")
+    task_artifact = _task_artifact(run_dir, job)
     return template.format(
         repo=repo_root,
         run=run_dir,
@@ -159,15 +154,17 @@ def _render_prompt(repo_root: Path, run_dir: Path, role: str, job: dict[str, Any
         plan=run_dir / "plan.md",
         architecture=run_dir / "architecture.md",
         tasks=run_dir / "tasks",
-        task=run_dir / "input" / "task.md",
+        task=task_artifact,
         implementation_report=run_dir / "implementation-report.md",
         review_report=run_dir / "review-report.md",
         test_report=run_dir / "test-report.md",
-        output=run_dir / _role_output_name(role),
+        output=run_dir / _role_output_name(role, job),
     )
 
 
-def _role_output_name(role: str) -> str:
+def _role_output_name(role: str, job: dict[str, Any] | None = None) -> str:
+    if job is not None and len(job.get("expected_outputs", [])) == 1:
+        return str(job["expected_outputs"][0])
     if role == "planner":
         return "plan.md"
     if role == "architect":
@@ -181,6 +178,13 @@ def _role_output_name(role: str) -> str:
     if role == "tester":
         return "test-report.md"
     raise ValueError(f"no output mapping for role: {role}")
+
+
+def _task_artifact(run_dir: Path, job: dict[str, Any]) -> Path:
+    for artifact in job.get("input_artifacts", []):
+        if artifact.startswith("input/task") and artifact.endswith(".md"):
+            return run_dir / artifact
+    return run_dir / "input" / "task.md"
 
 
 def _agent_config(config: FactoryConfig, role: str):

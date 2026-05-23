@@ -107,6 +107,44 @@ def test_cli_execute_task_runs_implementation_chain(tmp_path: Path) -> None:
     assert [job["status"] for job in queue["jobs"]] == ["passed", "passed", "passed"]
 
 
+def test_cli_execute_tasks_runs_parallel_implementers_with_write_scope_locks(tmp_path: Path) -> None:
+    task_a = tmp_path / "task-a.md"
+    task_b = tmp_path / "task-b.md"
+    config = tmp_path / "factory.yaml"
+    task_a.write_text("# Task A\n\n## Write Scope\n\n- `src/a.py`\n", encoding="utf-8")
+    task_b.write_text("# Task B\n\n## Write Scope\n\n- `src/b.py`\n", encoding="utf-8")
+    write_fake_factory_config(config)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory",
+            "execute-tasks",
+            str(task_a),
+            str(task_b),
+            "--config",
+            str(config),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "gate: parallel_implementation" in completed.stdout
+    run_dir = tmp_path / "runs" / "001"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    queue = json.loads((run_dir / "queue.json").read_text(encoding="utf-8"))
+    locks = json.loads((run_dir / "locks.json").read_text(encoding="utf-8"))
+    assert state["status"] == "parallel_implementation_gate"
+    assert [job["status"] for job in queue["jobs"]] == ["passed", "passed"]
+    assert queue["jobs"][0]["write_scope"] == ["src/a.py"]
+    assert queue["jobs"][1]["write_scope"] == ["src/b.py"]
+    assert locks == {"leases": {}, "write_scopes": {}}
+    assert (run_dir / "implementation-reports" / "001-task-a.md").is_file()
+    assert (run_dir / "implementation-reports" / "002-task-b.md").is_file()
+
+
 def test_cli_execute_task_runs_fix_loop_after_review_failure(tmp_path: Path) -> None:
     task = tmp_path / "task.md"
     config = tmp_path / "factory.yaml"

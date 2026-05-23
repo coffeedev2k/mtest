@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .runtime import build_feature, create_dry_run, run_only, run_task
+from .runtime import build_feature, create_dry_run, run_only, run_parallel_tasks, run_task
 from .status import render_status
 
 
@@ -25,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     execute_task = subparsers.add_parser("execute-task", help="Run implementer, reviewer, and tester for one task")
     execute_task.add_argument("task", type=Path)
     execute_task.add_argument("--config", type=Path, default=Path("factory.yaml"))
+    execute_tasks = subparsers.add_parser("execute-tasks", help="Run implementers for multiple tasks with write-scope locks")
+    execute_tasks.add_argument("tasks", type=Path, nargs="+")
+    execute_tasks.add_argument("--config", type=Path, default=Path("factory.yaml"))
     build = subparsers.add_parser("build", help="Plan, implement, review, test, and commit one task")
     build.add_argument("feature", type=Path)
     build.add_argument("--config", type=Path, default=Path("factory.yaml"))
@@ -68,6 +71,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"locks: {result.locks_file}")
         print(f"events: {result.events_file}")
         print("gate: task_execution")
+        return 0
+
+    if args.command == "execute-tasks":
+        result = run_parallel_tasks(args.tasks, args.config)
+        print(f"created run: {result.run_dir}")
+        print(f"state: {result.state_file}")
+        print(f"queue: {result.queue_file}")
+        print(f"locks: {result.locks_file}")
+        print(f"events: {result.events_file}")
+        print("gate: parallel_implementation")
         return 0
 
     if args.command == "build":

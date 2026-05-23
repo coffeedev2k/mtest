@@ -180,6 +180,14 @@ write_scope:
 
 The orchestrator must not assign two active jobs with overlapping write scopes.
 
+The debug/admin command for this mode is:
+
+```bash
+agent-factory execute-tasks task-a.md task-b.md --config factory.yaml
+```
+
+This starts an implementer worker pool and uses `write_scope` locks from the task files.
+
 ## User Role
 
 The user is not expected to micromanage implementation.
@@ -681,8 +689,7 @@ The run is successful if:
 
 - two independent implementation tasks can run at the same time
 - write-scope locks prevent conflicting edits
-- reviewer and tester jobs are generated per completed implementation job
-- failed review/test jobs create fix jobs
+- completed implementation reports are written per task
 - implementer workers continue to the next available job
 
 ## Why Workers Come First
