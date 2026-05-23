@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 
 from .config import ChartPatchConfig
-from .helm import run_helm_lint, run_helm_template
+from .helm import run_helm_lint, run_helm_package, run_helm_push, run_helm_template
 from .images import (
     ImageTargetMapping,
     ImageTargetMappingError,
@@ -36,6 +36,8 @@ SYNC_STAGE_NAMES = (
     "rewrite images",
     "verify patched render",
     "verify final chart",
+    "package chart",
+    "push chart",
 )
 
 
@@ -75,7 +77,9 @@ def render_sync_summary(summary: SyncSummary) -> str:
     lines.extend(
         f"  {index}. {stage}" for index, stage in enumerate(summary.stage_names, start=1)
     )
-    lines.append("No remote mutation: sync only checks dependencies and prints this summary.")
+    lines.append(
+        "Remote mutation occurs only after verification, packaging, and push gates pass."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -88,6 +92,7 @@ class SyncWorkspace:
     expected_chart_dir: Path
     original_render_path: Path
     patched_render_path: Path
+    package_output_dir: Path
     logs_dir: Path
 
 
@@ -111,6 +116,8 @@ class SyncResult:
     rewrite_replacements: int = 0
     final_helm_lint_verified: bool = False
     final_helm_template_verified: bool = False
+    packaged_chart_path: Path | None = None
+    pushed_chart_ref: str | None = None
 
 
 class SyncWorkflowError(RuntimeError):
@@ -280,6 +287,30 @@ def run_sync(
             )
         final_helm_template_verified = True
 
+    package_result = run_helm_package(
+        command_runner,
+        unpacked_chart,
+        workspace.package_output_dir,
+    )
+    _write_command_logs(workspace.logs_dir, "helm-package", package_result)
+    if package_result.returncode != 0:
+        raise SyncWorkflowError(
+            _format_command_failure("helm package failed", package_result)
+        )
+    packaged_chart = _find_packaged_chart_archive(workspace.package_output_dir)
+
+    try:
+        push_result = run_helm_push(
+            command_runner,
+            packaged_chart,
+            config.chart.output.chart_ref,
+        )
+    except ValueError as exc:
+        raise SyncWorkflowError(str(exc)) from None
+    _write_command_logs(workspace.logs_dir, "helm-push", push_result)
+    if push_result.returncode != 0:
+        raise SyncWorkflowError(_format_command_failure("helm push failed", push_result))
+
     return SyncResult(
         source_repo=config.chart.source.repo,
         source_chart=config.chart.source.chart,
@@ -299,6 +330,8 @@ def run_sync(
         rewrite_replacements=rewrite_result.total_replacements,
         final_helm_lint_verified=final_helm_lint_verified,
         final_helm_template_verified=final_helm_template_verified,
+        packaged_chart_path=packaged_chart,
+        pushed_chart_ref=config.chart.output.chart_ref,
     )
 
 
@@ -314,9 +347,10 @@ def create_sync_workspace(
     download_dir = root / "downloaded"
     unpacked_root = root / "unpacked"
     render_dir = root / "rendered"
+    package_output_dir = root / "packages"
     logs_dir = root / "logs"
 
-    for path in (download_dir, unpacked_root, render_dir, logs_dir):
+    for path in (download_dir, unpacked_root, render_dir, package_output_dir, logs_dir):
         path.mkdir(parents=True, exist_ok=True)
 
     chart_dir_name = _source_chart_dir_name(config.chart.source.chart)
@@ -329,6 +363,7 @@ def create_sync_workspace(
         expected_chart_dir=unpacked_root / chart_dir_name,
         original_render_path=render_dir / "original.yaml",
         patched_render_path=render_dir / "patched.yaml",
+        package_output_dir=package_output_dir,
         logs_dir=logs_dir,
     )
 
@@ -383,6 +418,10 @@ def render_sync_report(result: SyncResult) -> str:
         "Final helm template verification: "
         f"{_verification_status(result.final_helm_template_verified)}"
     )
+    if result.packaged_chart_path is not None:
+        lines.append(f"Packaged chart: {result.packaged_chart_path}")
+    if result.pushed_chart_ref is not None:
+        lines.append(f"Pushed OCI chart reference: {result.pushed_chart_ref}")
     return "\n".join(lines) + "\n"
 
 
@@ -451,6 +490,18 @@ def _find_unpacked_chart_dir(unpacked_root: Path, expected_path: Path) -> Path:
             f"found {chart_dir}"
         )
     return chart_dir
+
+
+def _find_packaged_chart_archive(package_output_dir: Path) -> Path:
+    archives = sorted(package_output_dir.glob("*.tgz"))
+    if not archives:
+        raise SyncWorkflowError(
+            f"missing packaged chart archive in {package_output_dir}"
+        )
+    if len(archives) > 1:
+        found = ", ".join(str(path) for path in archives)
+        raise SyncWorkflowError(f"ambiguous packaged chart archives: {found}")
+    return archives[0]
 
 
 def _write_command_logs(logs_dir: Path, label: str, result: CommandResult) -> None:

@@ -39,3 +39,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/026/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/027
   - commit: 4ca8bf1
+- Task cycle 3: Task: Add Configurable Final Chart Verification To `chartpatch sync`
+  - task_file: /home/atarasov/l/mtest/runs/028/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/029
+  - commit: 7a9dd82

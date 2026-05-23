@@ -65,9 +65,12 @@ class StubRunner:
         patched_template_result: CommandResult | None = None,
         final_template_result: CommandResult | None = None,
         lint_result: CommandResult | None = None,
+        package_result: CommandResult | None = None,
+        push_result: CommandResult | None = None,
         skopeo_results: tuple[CommandResult, ...] = (),
         git_am_result: CommandResult | None = None,
         create_archive: bool = True,
+        create_package: bool = True,
         extra_archive: bool = False,
         archive_chart_dir: str = "kube-prometheus-stack",
     ) -> None:
@@ -77,9 +80,12 @@ class StubRunner:
         self.patched_template_result = patched_template_result
         self.final_template_result = final_template_result
         self.lint_result = lint_result
+        self.package_result = package_result
+        self.push_result = push_result
         self.skopeo_results = list(skopeo_results)
         self.git_am_result = git_am_result
         self.create_archive = create_archive
+        self.create_package = create_package
         self.extra_archive = extra_archive
         self.archive_chart_dir = archive_chart_dir
         self.calls: list[tuple[str, ...]] = []
@@ -131,6 +137,21 @@ class StubRunner:
             raise AssertionError("unexpected extra helm template call")
         if args[:2] == ["helm", "lint"]:
             return self.lint_result or CommandResult(call, 0, "lint ok\n", "")
+        if args[:2] == ["helm", "package"]:
+            destination = Path(args[args.index("--destination") + 1])
+            if self.create_package:
+                (destination / "kube-prometheus-stack-1.0.0.tgz").write_text(
+                    "packaged chart\n",
+                    encoding="utf-8",
+                )
+            return self.package_result or CommandResult(
+                call,
+                0,
+                f"saved to: {destination / 'kube-prometheus-stack-1.0.0.tgz'}\n",
+                "",
+            )
+        if args[:2] == ["helm", "push"]:
+            return self.push_result or CommandResult(call, 0, "pushed\n", "")
         if args[:2] == ["skopeo", "copy"]:
             if self.skopeo_results:
                 return self.skopeo_results.pop(0)
@@ -200,6 +221,10 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert result.rewrite_replacements == 2
     assert result.final_helm_lint_verified is True
     assert result.final_helm_template_verified is True
+    assert result.packaged_chart_path == (
+        result.workspace_path / "packages" / "kube-prometheus-stack-1.0.0.tgz"
+    )
+    assert result.pushed_chart_ref == "oci://localhost:5000/helm/kube-prometheus-stack"
     assert result.rewritten_files == (Path("values.yaml"),)
     assert tuple(
         (rewrite.source, rewrite.target, rewrite.replacements)
@@ -234,11 +259,9 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         ("helm", "template"),
         ("helm", "lint"),
         ("helm", "template"),
+        ("helm", "package"),
+        ("helm", "push"),
     ]
-    assert all(
-        call[:2] not in {("helm", "package"), ("helm", "push")}
-        for call in runner.calls
-    )
 
     pull_args = runner.calls[0]
     assert pull_args == (
@@ -278,6 +301,21 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "template",
         "kube-prometheus-stack",
         str(result.unpacked_chart_path),
+    )
+    package_args = runner.calls[13]
+    assert package_args == (
+        "helm",
+        "package",
+        str(result.unpacked_chart_path),
+        "--destination",
+        str(result.workspace_path / "packages"),
+    )
+    push_args = runner.calls[14]
+    assert push_args == (
+        "helm",
+        "push",
+        str(result.packaged_chart_path),
+        "oci://localhost:5000/helm/kube-prometheus-stack",
     )
     assert runner.calls[2] == (
         "skopeo",
@@ -349,6 +387,11 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert "  - localhost:5000/registry.example.com/setup:1.0.0" in report
     assert "Final helm lint verification: passed" in report
     assert "Final helm template verification: passed" in report
+    assert f"Packaged chart: {result.packaged_chart_path}" in report
+    assert (
+        "Pushed OCI chart reference: "
+        "oci://localhost:5000/helm/kube-prometheus-stack"
+    ) in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
     assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
     assert report.index("Mirrored images: 2") < report.index("Applied patch:")
@@ -362,6 +405,12 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     )
     assert report.index("Final helm lint verification: passed") < report.index(
         "Final helm template verification: passed"
+    )
+    assert report.index("Final helm template verification: passed") < report.index(
+        "Packaged chart:"
+    )
+    assert report.index("Packaged chart:") < report.index(
+        "Pushed OCI chart reference:"
     )
 
 
@@ -392,6 +441,16 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
     assert "helm template kube-prometheus-stack" in (
         logs_dir / "helm-template-final.args.txt"
     ).read_text(encoding="utf-8")
+    assert "helm package" in (logs_dir / "helm-package.args.txt").read_text(
+        encoding="utf-8"
+    )
+    assert (logs_dir / "helm-package.stdout.txt").read_text(encoding="utf-8").startswith(
+        "saved to:"
+    )
+    assert "helm push" in (logs_dir / "helm-push.args.txt").read_text(
+        encoding="utf-8"
+    )
+    assert (logs_dir / "helm-push.stdout.txt").read_text(encoding="utf-8") == "pushed\n"
     assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
         logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
@@ -431,7 +490,10 @@ def test_sync_respects_final_verification_flags(
         ("git", "am"),
         ("helm", "template"),
     ]
-    assert [call[:2] for call in runner.calls] == common_prefix + expected_tail
+    assert [call[:2] for call in runner.calls] == common_prefix + expected_tail + [
+        ("helm", "package"),
+        ("helm", "push"),
+    ]
     assert result.final_helm_lint_verified is helm_lint
     assert result.final_helm_template_verified is helm_template
 
@@ -523,6 +585,83 @@ def test_sync_fails_when_final_helm_template_verification_fails(tmp_path: Path) 
         call[:2] not in {("helm", "package"), ("helm", "push")}
         for call in runner.calls
     )
+
+
+def test_sync_fails_when_helm_package_fails(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        package_result=CommandResult(
+            ("helm", "package"),
+            44,
+            "package stdout\n",
+            "package stderr\n",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "helm package failed" in message
+    assert "exited with code 44" in message
+    assert "package stdout" in message
+    assert "package stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+        ("helm", "template"),
+        ("helm", "lint"),
+        ("helm", "template"),
+        ("helm", "package"),
+    ]
+    assert all(call[:2] != ("helm", "push") for call in runner.calls)
+
+
+def test_sync_fails_when_helm_push_fails(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        push_result=CommandResult(
+            ("helm", "push"),
+            45,
+            "push stdout\n",
+            "push stderr\n",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "helm push failed" in message
+    assert "exited with code 45" in message
+    assert "push stdout" in message
+    assert "push stderr" in message
+    assert [call[:2] for call in runner.calls][-2:] == [
+        ("helm", "package"),
+        ("helm", "push"),
+    ]
+
+
+def test_sync_rejects_non_oci_chart_ref_before_helm_push(tmp_path: Path) -> None:
+    config = validate_config(_with_output_chart_ref("http://localhost:5000/helm/chart"))
+    runner = StubRunner(tmp_path)
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(config, repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "chart.output.chart_ref must start with oci://" in message
+    assert "http://localhost:5000/helm/chart" in message
+    assert [call[:2] for call in runner.calls][-1] == ("helm", "package")
+    assert all(call[:2] != ("helm", "push") for call in runner.calls)
 
 
 def test_sync_fails_when_helm_pull_fails(tmp_path: Path) -> None:
@@ -888,6 +1027,14 @@ def _with_verification_flags(helm_lint: bool, helm_template: bool) -> dict[str, 
     verification = chart["verification"]
     verification["helm_lint"] = helm_lint
     verification["helm_template"] = helm_template
+    return copied
+
+
+def _with_output_chart_ref(chart_ref: str) -> dict[str, object]:
+    copied = _copy(VALID_CONFIG)
+    chart = copied["chart"]
+    output = chart["output"]
+    output["chart_ref"] = chart_ref
     return copied
 
 

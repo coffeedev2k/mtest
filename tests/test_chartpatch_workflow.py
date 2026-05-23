@@ -29,6 +29,8 @@ EXPECTED_SYNC_STAGE_NAMES = (
     "rewrite images",
     "verify patched render",
     "verify final chart",
+    "package chart",
+    "push chart",
 )
 
 
@@ -59,4 +61,8 @@ def test_render_sync_summary_includes_required_fields_and_ordered_stages() -> No
     assert "Output OCI chart reference: oci://localhost:5000/helm/kube-prometheus-stack" in output
     assert "Planned sync stages:\n  1. pull chart\n  2. render original chart" in output
     assert "  6. rewrite images\n  7. verify patched render\n  8. verify final chart\n" in output
-    assert "No remote mutation" in output
+    assert "  9. package chart\n  10. push chart\n" in output
+    assert (
+        "Remote mutation occurs only after verification, packaging, and push gates pass."
+        in output
+    )
