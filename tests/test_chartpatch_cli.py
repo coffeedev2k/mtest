@@ -9,6 +9,7 @@ import pytest
 from chartpatch import cli
 from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
+from chartpatch.workflow import SyncResult
 
 
 FIXTURES = Path("tests/fixtures/chartpatch")
@@ -107,9 +108,9 @@ def test_plan_does_not_invoke_command_runner(monkeypatch, capsys) -> None:
 
 def test_plan_does_not_invoke_sync_workflow(monkeypatch, capsys) -> None:
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("plan must not render the sync summary")
+        raise AssertionError("plan must not run the sync workflow")
 
-    monkeypatch.setattr(cli, "build_sync_summary", fail_if_called)
+    monkeypatch.setattr(cli, "run_sync", fail_if_called)
 
     assert cli.main(["plan", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 0
     captured = capsys.readouterr()
@@ -158,8 +159,27 @@ def test_sync_valid_fixture_exits_nonzero_when_dependency_is_missing(monkeypatch
     assert "missing required runtime dependency: skopeo" in captured.err
 
 
-def test_sync_valid_fixture_exits_zero_and_prints_summary(monkeypatch, capsys) -> None:
+def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "run_sync",
+        lambda config: SyncResult(
+            source_repo=config.chart.source.repo,
+            source_chart=config.chart.source.chart,
+            source_version=config.chart.source.version,
+            workspace_path=Path("tmp/chartpatch-sync-test"),
+            chart_archive_path=Path(
+                "tmp/chartpatch-sync-test/downloaded/kube-prometheus-stack-70.0.0.tgz"
+            ),
+            unpacked_chart_path=Path(
+                "tmp/chartpatch-sync-test/unpacked/kube-prometheus-stack"
+            ),
+            original_render_path=Path(
+                "tmp/chartpatch-sync-test/rendered/original.yaml"
+            ),
+        ),
+    )
 
     result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
 
@@ -167,24 +187,14 @@ def test_sync_valid_fixture_exits_zero_and_prints_summary(monkeypatch, capsys) -
     assert result == 0
     assert captured.err == ""
     assert captured.out == (
-        "ChartPatch sync summary\n"
+        "ChartPatch sync report\n"
         "Source chart repo: https://prometheus-community.github.io/helm-charts\n"
         "Source chart name: kube-prometheus-stack\n"
         "Source chart version: 70.0.0\n"
-        "Patch file: patches/kube-prometheus-stack.patch\n"
-        "Local registry URL: localhost:5000\n"
-        "Output OCI chart reference: oci://localhost:5000/helm/kube-prometheus-stack\n"
-        "Planned sync stages:\n"
-        "  1. pull chart\n"
-        "  2. render original chart\n"
-        "  3. discover images\n"
-        "  4. mirror images\n"
-        "  5. apply patch\n"
-        "  6. rewrite images\n"
-        "  7. verify patched chart\n"
-        "  8. package chart\n"
-        "  9. push chart\n"
-        "No remote mutation: sync only checks dependencies and prints this summary.\n"
+        "Workspace path: tmp/chartpatch-sync-test\n"
+        "Pulled chart archive: tmp/chartpatch-sync-test/downloaded/kube-prometheus-stack-70.0.0.tgz\n"
+        "Unpacked chart path: tmp/chartpatch-sync-test/unpacked/kube-prometheus-stack\n"
+        "Original render output: tmp/chartpatch-sync-test/rendered/original.yaml\n"
     )
 
 
@@ -207,17 +217,20 @@ def test_sync_invalid_fixture_reports_plan_consistent_validation_error() -> None
     assert "chart.source.version is required" in completed.stderr
 
 
-def test_sync_does_not_invoke_command_runner(monkeypatch, capsys) -> None:
+def test_sync_missing_dependency_fails_before_workflow_execution(monkeypatch, capsys) -> None:
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("sync skeleton must not invoke the command runner")
+        raise AssertionError("missing dependency must not run the sync workflow")
 
-    monkeypatch.setattr(CommandRunner, "run", fail_if_called)
-    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    def fail_with_missing_dependency() -> None:
+        raise MissingRuntimeDependencies(("helm",))
 
-    assert cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 0
+    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+    monkeypatch.setattr(cli, "check_required_binaries", fail_with_missing_dependency)
+
+    assert cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 1
     captured = capsys.readouterr()
-    assert "ChartPatch sync summary" in captured.out
-    assert captured.err == ""
+    assert captured.out == ""
+    assert "missing required runtime dependency: helm" in captured.err
 
 
 @pytest.mark.parametrize("command", ["plan", "sync"])

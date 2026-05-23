@@ -8,7 +8,7 @@ from .config import ConfigError, load_config
 from .dependencies import MissingRuntimeDependencies, check_required_binaries
 from .plan import build_plan
 from .report import render_plan
-from .workflow import build_sync_summary, render_sync_summary
+from .workflow import SyncWorkflowError, render_sync_report, run_sync
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan = subparsers.add_parser("plan", help="Print a side-effect-free chart execution plan")
     plan.add_argument("config", type=Path, help="YAML config file")
 
-    sync = subparsers.add_parser("sync", help="Print a dry chart sync workflow summary")
+    sync = subparsers.add_parser("sync", help="Pull and render the configured chart")
     sync.add_argument("config", type=Path, help="YAML config file")
 
     return parser
@@ -41,13 +41,17 @@ def main(argv: list[str] | None = None) -> int:
         try:
             config = load_config(args.config)
             check_required_binaries()
+            result = run_sync(config)
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         except MissingRuntimeDependencies as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(render_sync_summary(build_sync_summary(config)), end="")
+        except SyncWorkflowError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(render_sync_report(result), end="")
         return 0
 
     parser.error(f"unknown command: {args.command}")
