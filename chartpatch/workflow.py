@@ -6,6 +6,7 @@ import tarfile
 import tempfile
 
 from .config import ChartPatchConfig
+from .images import ManifestImageDiscoveryError, discover_manifest_images
 from .runner import CommandResult, CommandRunner
 
 
@@ -82,6 +83,7 @@ class SyncResult:
     chart_archive_path: Path
     unpacked_chart_path: Path
     original_render_path: Path
+    discovered_images: tuple[str, ...]
 
 
 class SyncWorkflowError(RuntimeError):
@@ -139,6 +141,10 @@ def run_sync(
         )
 
     workspace.original_render_path.write_text(template_result.stdout, encoding="utf-8")
+    try:
+        discovered_images = discover_manifest_images(template_result.stdout)
+    except ManifestImageDiscoveryError as exc:
+        raise SyncWorkflowError(f"image discovery failed: {exc}") from None
 
     return SyncResult(
         source_repo=config.chart.source.repo,
@@ -148,6 +154,7 @@ def run_sync(
         chart_archive_path=chart_archive,
         unpacked_chart_path=unpacked_chart,
         original_render_path=workspace.original_render_path,
+        discovered_images=discovered_images,
     )
 
 
@@ -191,7 +198,9 @@ def render_sync_report(result: SyncResult) -> str:
         f"Pulled chart archive: {result.chart_archive_path}",
         f"Unpacked chart path: {result.unpacked_chart_path}",
         f"Original render output: {result.original_render_path}",
+        f"Discovered images: {len(result.discovered_images)}",
     ]
+    lines.extend(f"  - {image}" for image in result.discovered_images)
     return "\n".join(lines) + "\n"
 
 

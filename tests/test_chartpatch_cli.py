@@ -9,7 +9,7 @@ import pytest
 from chartpatch import cli
 from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
-from chartpatch.workflow import SyncResult
+from chartpatch.workflow import SyncResult, SyncWorkflowError
 
 
 FIXTURES = Path("tests/fixtures/chartpatch")
@@ -178,6 +178,10 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
             original_render_path=Path(
                 "tmp/chartpatch-sync-test/rendered/original.yaml"
             ),
+            discovered_images=(
+                "docker.io/bitnami/nginx:1.27.4",
+                "registry.example.com/setup:1.0.0",
+            ),
         ),
     )
 
@@ -195,7 +199,28 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
         "Pulled chart archive: tmp/chartpatch-sync-test/downloaded/kube-prometheus-stack-70.0.0.tgz\n"
         "Unpacked chart path: tmp/chartpatch-sync-test/unpacked/kube-prometheus-stack\n"
         "Original render output: tmp/chartpatch-sync-test/rendered/original.yaml\n"
+        "Discovered images: 2\n"
+        "  - docker.io/bitnami/nginx:1.27.4\n"
+        "  - registry.example.com/setup:1.0.0\n"
     )
+
+
+def test_sync_no_discovered_images_exits_nonzero(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+
+    def fail_with_no_images(config) -> SyncResult:
+        raise SyncWorkflowError(
+            "image discovery failed: rendered manifests contain no discoverable container images"
+        )
+
+    monkeypatch.setattr(cli, "run_sync", fail_with_no_images)
+
+    result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "no discoverable container images" in captured.err
 
 
 def test_sync_invalid_fixture_reports_plan_consistent_validation_error() -> None:

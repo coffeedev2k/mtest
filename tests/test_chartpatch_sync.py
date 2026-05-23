@@ -25,6 +25,19 @@ VALID_CONFIG = {
     },
 }
 
+ORIGINAL_RENDER_WITH_IMAGES = """apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: setup
+          image: registry.example.com/setup:1.0.0
+      containers:
+        - name: app
+          image: docker.io/bitnami/nginx:1.27.4
+"""
+
 
 class StubRunner:
     def __init__(
@@ -67,7 +80,7 @@ class StubRunner:
             return self.template_result or CommandResult(
                 call,
                 0,
-                "apiVersion: v1\nkind: ConfigMap\n",
+                ORIGINAL_RENDER_WITH_IMAGES,
                 "",
             )
         raise AssertionError(f"unexpected command: {args}")
@@ -88,8 +101,10 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         result.workspace_path / "unpacked" / "kube-prometheus-stack"
     )
     assert result.original_render_path == result.workspace_path / "rendered" / "original.yaml"
-    assert result.original_render_path.read_text(encoding="utf-8") == (
-        "apiVersion: v1\nkind: ConfigMap\n"
+    assert result.original_render_path.read_text(encoding="utf-8") == ORIGINAL_RENDER_WITH_IMAGES
+    assert result.discovered_images == (
+        "docker.io/bitnami/nginx:1.27.4",
+        "registry.example.com/setup:1.0.0",
     )
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
@@ -124,6 +139,9 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert f"Pulled chart archive: {result.chart_archive_path}" in report
     assert f"Unpacked chart path: {result.unpacked_chart_path}" in report
     assert f"Original render output: {result.original_render_path}" in report
+    assert "Discovered images: 2" in report
+    assert "  - docker.io/bitnami/nginx:1.27.4" in report
+    assert "  - registry.example.com/setup:1.0.0" in report
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:
@@ -180,6 +198,29 @@ def test_sync_fails_when_helm_template_fails(tmp_path: Path) -> None:
     assert "exited with code 42" in message
     assert "template stdout" in message
     assert "template stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+    ]
+
+
+def test_sync_fails_when_original_render_contains_no_images(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        template_result=CommandResult(
+            ("helm", "template"),
+            0,
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: settings\n",
+            "",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "image discovery failed" in message
+    assert "no discoverable container images" in message
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
         ("helm", "template"),
