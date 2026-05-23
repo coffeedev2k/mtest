@@ -63,6 +63,8 @@ class StubRunner:
         pull_result: CommandResult | None = None,
         template_result: CommandResult | None = None,
         patched_template_result: CommandResult | None = None,
+        final_template_result: CommandResult | None = None,
+        lint_result: CommandResult | None = None,
         skopeo_results: tuple[CommandResult, ...] = (),
         git_am_result: CommandResult | None = None,
         create_archive: bool = True,
@@ -73,6 +75,8 @@ class StubRunner:
         self.pull_result = pull_result
         self.template_result = template_result
         self.patched_template_result = patched_template_result
+        self.final_template_result = final_template_result
+        self.lint_result = lint_result
         self.skopeo_results = list(skopeo_results)
         self.git_am_result = git_am_result
         self.create_archive = create_archive
@@ -117,7 +121,16 @@ class StubRunner:
                     PATCHED_RENDER_WITH_LOCAL_IMAGES,
                     "",
                 )
+            if self.template_call_count == 3:
+                return self.final_template_result or CommandResult(
+                    call,
+                    0,
+                    PATCHED_RENDER_WITH_LOCAL_IMAGES,
+                    "",
+                )
             raise AssertionError("unexpected extra helm template call")
+        if args[:2] == ["helm", "lint"]:
+            return self.lint_result or CommandResult(call, 0, "lint ok\n", "")
         if args[:2] == ["skopeo", "copy"]:
             if self.skopeo_results:
                 return self.skopeo_results.pop(0)
@@ -185,6 +198,8 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     )
     assert result.applied_patch_file == tmp_path / "patches/kube-prometheus-stack.patch"
     assert result.rewrite_replacements == 2
+    assert result.final_helm_lint_verified is True
+    assert result.final_helm_template_verified is True
     assert result.rewritten_files == (Path("values.yaml"),)
     assert tuple(
         (rewrite.source, rewrite.target, rewrite.replacements)
@@ -217,14 +232,11 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         ("git", "commit"),
         ("git", "am"),
         ("helm", "template"),
+        ("helm", "lint"),
+        ("helm", "template"),
     ]
     assert all(
-        call[:2]
-        not in {
-            ("helm", "lint"),
-            ("helm", "package"),
-            ("helm", "push"),
-        }
+        call[:2] not in {("helm", "package"), ("helm", "push")}
         for call in runner.calls
     )
 
@@ -249,6 +261,19 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     )
     patched_template_args = runner.calls[10]
     assert patched_template_args == (
+        "helm",
+        "template",
+        "kube-prometheus-stack",
+        str(result.unpacked_chart_path),
+    )
+    lint_args = runner.calls[11]
+    assert lint_args == (
+        "helm",
+        "lint",
+        str(result.unpacked_chart_path),
+    )
+    final_template_args = runner.calls[12]
+    assert final_template_args == (
         "helm",
         "template",
         "kube-prometheus-stack",
@@ -322,6 +347,8 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert "Final rendered images: 2" in report
     assert "  - localhost:5000/docker.io/bitnami/nginx:1.27.4" in report
     assert "  - localhost:5000/registry.example.com/setup:1.0.0" in report
+    assert "Final helm lint verification: passed" in report
+    assert "Final helm template verification: passed" in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
     assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
     assert report.index("Mirrored images: 2") < report.index("Applied patch:")
@@ -329,6 +356,12 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert report.index("Image rewrites: 2") < report.index("Image rewrite replacements: 2")
     assert report.index("Image rewrite replacements: 2") < report.index(
         "Patched render verification: passed"
+    )
+    assert report.index("Patched render verification: passed") < report.index(
+        "Final helm lint verification: passed"
+    )
+    assert report.index("Final helm lint verification: passed") < report.index(
+        "Final helm template verification: passed"
     )
 
 
@@ -350,10 +383,146 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
         logs_dir / "helm-template-patched.stdout.txt"
     ).read_text(encoding="utf-8") == PATCHED_RENDER_WITH_LOCAL_IMAGES
     assert (logs_dir / "helm-template-patched.stderr.txt").read_text(encoding="utf-8") == ""
+    assert "helm lint" in (logs_dir / "helm-lint-final.args.txt").read_text(
+        encoding="utf-8"
+    )
+    assert (logs_dir / "helm-lint-final.stdout.txt").read_text(encoding="utf-8") == (
+        "lint ok\n"
+    )
+    assert "helm template kube-prometheus-stack" in (
+        logs_dir / "helm-template-final.args.txt"
+    ).read_text(encoding="utf-8")
     assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
         logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
     assert (logs_dir / "git-am.stdout.txt").read_text(encoding="utf-8") == "applied\n"
+
+
+@pytest.mark.parametrize(
+    ("helm_lint", "helm_template", "expected_tail"),
+    [
+        (True, False, [("helm", "lint")]),
+        (False, True, [("helm", "template")]),
+        (True, True, [("helm", "lint"), ("helm", "template")]),
+        (False, False, []),
+    ],
+)
+def test_sync_respects_final_verification_flags(
+    tmp_path: Path,
+    helm_lint: bool,
+    helm_template: bool,
+    expected_tail: list[tuple[str, str]],
+) -> None:
+    config = validate_config(_with_verification_flags(helm_lint, helm_template))
+    runner = StubRunner(tmp_path)
+
+    result = run_sync(config, repo_root=tmp_path, runner=runner)
+
+    common_prefix = [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+        ("helm", "template"),
+    ]
+    assert [call[:2] for call in runner.calls] == common_prefix + expected_tail
+    assert result.final_helm_lint_verified is helm_lint
+    assert result.final_helm_template_verified is helm_template
+
+    report = render_sync_report(result)
+    assert (
+        f"Final helm lint verification: {'passed' if helm_lint else 'skipped'}"
+        in report
+    )
+    assert (
+        "Final helm template verification: "
+        f"{'passed' if helm_template else 'skipped'}"
+    ) in report
+
+
+def test_sync_fails_when_final_helm_lint_fails(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        lint_result=CommandResult(
+            ("helm", "lint"),
+            31,
+            "lint stdout\n",
+            "lint stderr\n",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "final helm lint verification failed" in message
+    assert "exited with code 31" in message
+    assert "lint stdout" in message
+    assert "lint stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+        ("helm", "template"),
+        ("helm", "lint"),
+    ]
+    assert all(
+        call[:2] not in {("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
+
+
+def test_sync_fails_when_final_helm_template_verification_fails(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        final_template_result=CommandResult(
+            ("helm", "template"),
+            37,
+            "final template stdout\n",
+            "final template stderr\n",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "final helm template verification failed" in message
+    assert "exited with code 37" in message
+    assert "final template stdout" in message
+    assert "final template stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+        ("helm", "template"),
+        ("helm", "lint"),
+        ("helm", "template"),
+    ]
+    assert all(
+        call[:2] not in {("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
 
 
 def test_sync_fails_when_helm_pull_fails(tmp_path: Path) -> None:
@@ -711,3 +880,18 @@ def _write_chart_archive(archive_path: Path, tmp_path: Path, chart_dir_name: str
     )
     with tarfile.open(archive_path, "w:gz") as archive:
         archive.add(chart_root, arcname=chart_dir_name)
+
+
+def _with_verification_flags(helm_lint: bool, helm_template: bool) -> dict[str, object]:
+    copied = _copy(VALID_CONFIG)
+    chart = copied["chart"]
+    verification = chart["verification"]
+    verification["helm_lint"] = helm_lint
+    verification["helm_template"] = helm_template
+    return copied
+
+
+def _copy(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _copy(item) for key, item in value.items()}
+    return value

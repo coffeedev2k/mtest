@@ -6,6 +6,7 @@ import tarfile
 import tempfile
 
 from .config import ChartPatchConfig
+from .helm import run_helm_lint, run_helm_template
 from .images import (
     ImageTargetMapping,
     ImageTargetMappingError,
@@ -34,6 +35,7 @@ SYNC_STAGE_NAMES = (
     "apply patch",
     "rewrite images",
     "verify patched render",
+    "verify final chart",
 )
 
 
@@ -107,6 +109,8 @@ class SyncResult:
     image_rewrites: tuple[ImageRewriteMapping, ...] = ()
     rewritten_files: tuple[Path, ...] = ()
     rewrite_replacements: int = 0
+    final_helm_lint_verified: bool = False
+    final_helm_template_verified: bool = False
 
 
 class SyncWorkflowError(RuntimeError):
@@ -149,14 +153,7 @@ def run_sync(
         workspace.expected_chart_dir,
     )
 
-    template_result = command_runner.run(
-        [
-            "helm",
-            "template",
-            config.chart.name,
-            str(unpacked_chart),
-        ]
-    )
+    template_result = run_helm_template(command_runner, config.chart.name, unpacked_chart)
     _write_command_logs(workspace.logs_dir, "helm-template-original", template_result)
     if template_result.returncode != 0:
         raise SyncWorkflowError(
@@ -213,13 +210,10 @@ def run_sync(
     except ImageRewriteError as exc:
         raise SyncWorkflowError(str(exc)) from None
 
-    patched_template_result = command_runner.run(
-        [
-            "helm",
-            "template",
-            config.chart.name,
-            str(unpacked_chart),
-        ]
+    patched_template_result = run_helm_template(
+        command_runner,
+        config.chart.name,
+        unpacked_chart,
     )
     _write_command_logs(
         workspace.logs_dir,
@@ -252,6 +246,40 @@ def run_sync(
     except ImageRewriteVerificationError as exc:
         raise SyncWorkflowError(str(exc)) from None
 
+    final_helm_lint_verified = False
+    if config.chart.verification.helm_lint:
+        lint_result = run_helm_lint(command_runner, unpacked_chart)
+        _write_command_logs(workspace.logs_dir, "helm-lint-final", lint_result)
+        if lint_result.returncode != 0:
+            raise SyncWorkflowError(
+                _format_command_failure(
+                    "final helm lint verification failed",
+                    lint_result,
+                )
+            )
+        final_helm_lint_verified = True
+
+    final_helm_template_verified = False
+    if config.chart.verification.helm_template:
+        final_template_result = run_helm_template(
+            command_runner,
+            config.chart.name,
+            unpacked_chart,
+        )
+        _write_command_logs(
+            workspace.logs_dir,
+            "helm-template-final",
+            final_template_result,
+        )
+        if final_template_result.returncode != 0:
+            raise SyncWorkflowError(
+                _format_command_failure(
+                    "final helm template verification failed",
+                    final_template_result,
+                )
+            )
+        final_helm_template_verified = True
+
     return SyncResult(
         source_repo=config.chart.source.repo,
         source_chart=config.chart.source.chart,
@@ -269,6 +297,8 @@ def run_sync(
         image_rewrites=rewrite_result.mappings,
         rewritten_files=tuple(change.path for change in rewrite_result.changes),
         rewrite_replacements=rewrite_result.total_replacements,
+        final_helm_lint_verified=final_helm_lint_verified,
+        final_helm_template_verified=final_helm_template_verified,
     )
 
 
@@ -345,7 +375,21 @@ def render_sync_report(result: SyncResult) -> str:
         lines.append("Patched render verification: passed")
         lines.append(f"Final rendered images: {len(result.final_rendered_images)}")
         lines.extend(f"  - {image}" for image in result.final_rendered_images)
+    lines.append(
+        "Final helm lint verification: "
+        f"{_verification_status(result.final_helm_lint_verified)}"
+    )
+    lines.append(
+        "Final helm template verification: "
+        f"{_verification_status(result.final_helm_template_verified)}"
+    )
     return "\n".join(lines) + "\n"
+
+
+def _verification_status(verified: bool) -> str:
+    if verified:
+        return "passed"
+    return "skipped"
 
 
 def _resolve_config_path(repo_root: Path, configured_path: str) -> Path:

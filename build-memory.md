@@ -35,3 +35,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/024/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/025
   - commit: 7eb7efd
+- Task cycle 2: Task: Add Post-Rewrite Patched Render Verification
+  - task_file: /home/atarasov/l/mtest/runs/026/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/027
+  - commit: 4ca8bf1

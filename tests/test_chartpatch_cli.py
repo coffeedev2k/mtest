@@ -202,6 +202,8 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
         "Discovered images: 2\n"
         "  - docker.io/bitnami/nginx:1.27.4\n"
         "  - registry.example.com/setup:1.0.0\n"
+        "Final helm lint verification: skipped\n"
+        "Final helm template verification: skipped\n"
     )
 
 
