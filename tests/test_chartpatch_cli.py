@@ -4,6 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from chartpatch import cli
+from chartpatch.runner import CommandRunner
+
 
 FIXTURES = Path("tests/fixtures/chartpatch")
 
@@ -85,6 +88,18 @@ def test_plan_invalid_yaml_exits_nonzero(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert completed.stdout == ""
     assert "invalid YAML" in completed.stderr
+
+
+def test_plan_does_not_invoke_command_runner(monkeypatch, capsys) -> None:
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("plan must not invoke the command runner")
+
+    monkeypatch.setattr(CommandRunner, "run", fail_if_called)
+
+    assert cli.main(["plan", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 0
+    captured = capsys.readouterr()
+    assert "ChartPatch execution plan" in captured.out
+    assert captured.err == ""
 
 
 def test_missing_plan_argument_exits_nonzero() -> None:

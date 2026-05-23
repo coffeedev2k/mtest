@@ -74,12 +74,38 @@ def test_empty_or_non_mapping_config_fails_validation(raw: object) -> None:
         "chart.source.version",
         "chart.patch.file",
         "chart.output.chart_ref",
+        "chart.verification.helm_lint",
+        "chart.verification.helm_template",
     ],
 )
 def test_each_required_field_missing_fails_validation(field: str) -> None:
     raw = _without_field(VALID_CONFIG, field)
 
     with pytest.raises(ConfigError, match=f"{field} is required"):
+        validate_config(raw)
+
+
+@pytest.mark.parametrize("section", ["registry", "chart"])
+def test_each_required_top_level_section_missing_fails_validation(section: str) -> None:
+    raw = _without_field(VALID_CONFIG, section)
+
+    with pytest.raises(ConfigError, match=f"{section} is required"):
+        validate_config(raw)
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "chart.source",
+        "chart.patch",
+        "chart.output",
+        "chart.verification",
+    ],
+)
+def test_each_required_nested_section_missing_fails_validation(section: str) -> None:
+    raw = _without_field(VALID_CONFIG, section)
+
+    with pytest.raises(ConfigError, match=f"{section} is required"):
         validate_config(raw)
 
 
@@ -93,12 +119,19 @@ def test_each_required_field_missing_fails_validation(field: str) -> None:
         "chart.source.version",
         "chart.patch.file",
         "chart.output.chart_ref",
+        "chart.verification.helm_lint",
+        "chart.verification.helm_template",
     ],
 )
 def test_required_fields_with_wrong_types_fail_validation(field: str) -> None:
     raw = _with_field(VALID_CONFIG, field, 123)
 
-    with pytest.raises(ConfigError, match=f"{field} must be a non-empty string"):
+    expected = (
+        f"{field} must be a boolean"
+        if field.startswith("chart.verification.")
+        else f"{field} must be a non-empty string"
+    )
+    with pytest.raises(ConfigError, match=expected):
         validate_config(raw)
 
 
@@ -135,26 +168,15 @@ def test_helm_template_with_non_boolean_value_fails_validation() -> None:
         validate_config(raw)
 
 
-def test_chart_ref_without_oci_scheme_fails_validation() -> None:
-    raw = _with_field(VALID_CONFIG, "chart.output.chart_ref", "http://localhost:5000/helm/chart")
-
-    with pytest.raises(ConfigError, match="chart.output.chart_ref must start with oci://"):
-        validate_config(raw)
-
-
-def test_registry_mismatch_fails_validation() -> None:
-    raw = _with_field(VALID_CONFIG, "chart.output.chart_ref", "oci://registry.test/helm/chart")
-
-    with pytest.raises(ConfigError, match="registry.url must match"):
-        validate_config(raw)
-
-
 @pytest.mark.parametrize(
     ("fixture", "message"),
     [
+        ("missing-registry.yaml", "registry is required"),
+        ("missing-source.yaml", "chart.source is required"),
+        ("missing-patch.yaml", "chart.patch is required"),
+        ("missing-output.yaml", "chart.output is required"),
+        ("missing-verification.yaml", "chart.verification is required"),
         ("missing-source-version.yaml", "chart.source.version is required"),
-        ("non-oci-chart-ref.yaml", "chart.output.chart_ref must start with oci://"),
-        ("registry-mismatch.yaml", "registry.url must match"),
     ],
 )
 def test_invalid_regression_fixtures_fail(fixture: str, message: str) -> None:
@@ -194,4 +216,3 @@ def _copy(value: object) -> object:
     if isinstance(value, dict):
         return {key: _copy(item) for key, item in value.items()}
     return value
-

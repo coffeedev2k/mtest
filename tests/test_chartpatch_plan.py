@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from chartpatch.config import validate_config
-from chartpatch.plan import render_plan
+from chartpatch.plan import build_plan, render_plan
 
 VALID_CONFIG = {
     "registry": {"url": "localhost:5000"},
@@ -32,6 +32,19 @@ def test_rendered_plan_includes_required_valid_config_fields() -> None:
     assert "No remote mutation: plan only reads the config and prints this plan." in plan
 
 
+def test_plan_object_includes_required_valid_config_fields() -> None:
+    plan = build_plan(validate_config(VALID_CONFIG))
+
+    assert plan.source_repo == "https://prometheus-community.github.io/helm-charts"
+    assert plan.source_chart == "kube-prometheus-stack"
+    assert plan.source_version == "70.0.0"
+    assert plan.patch_file == "patches/kube-prometheus-stack.patch"
+    assert plan.registry_url == "localhost:5000"
+    assert plan.output_chart_ref == "oci://localhost:5000/helm/kube-prometheus-stack"
+    assert plan.helm_lint is True
+    assert plan.helm_template is True
+
+
 def test_enabled_verification_steps_are_shown_consistently() -> None:
     plan = render_plan(validate_config(VALID_CONFIG))
 
@@ -47,25 +60,6 @@ def test_disabled_verification_steps_are_shown_consistently() -> None:
 
     assert "  helm_lint: disabled" in plan
     assert "  helm_template: disabled" in plan
-
-
-def test_absent_verification_steps_are_shown_consistently() -> None:
-    raw = _without_field(VALID_CONFIG, "chart.verification")
-
-    plan = render_plan(validate_config(raw))
-
-    assert "  helm_lint: disabled" in plan
-    assert "  helm_template: disabled" in plan
-
-
-def _without_field(raw: dict[str, object], field: str) -> dict[str, object]:
-    copied = _copy(raw)
-    parent = copied
-    parts = field.split(".")
-    for part in parts[:-1]:
-        parent = parent[part]
-    del parent[parts[-1]]
-    return copied
 
 
 def _with_field(raw: dict[str, object], field: str, value: object) -> dict[str, object]:

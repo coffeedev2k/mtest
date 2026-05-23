@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_config
-from .plan import render_plan
+from .plan import build_plan
+from .report import render_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,9 +29,8 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(render_plan(config), end="")
+        print(render_plan(build_plan(config)), end="")
         return 0
 
     parser.error(f"unknown command: {args.command}")
     return 2
-

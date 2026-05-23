@@ -3,9 +3,6 @@ registry:
 
 chart:
   name: kube-prometheus-stack
-  source:
-    repo: https://prometheus-community.github.io/helm-charts
-    chart: kube-prometheus-stack
   patch:
     file: patches/kube-prometheus-stack.patch
   output:

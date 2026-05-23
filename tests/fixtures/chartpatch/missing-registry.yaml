@@ -1,11 +1,9 @@
-registry:
-  url: localhost:5000
-
 chart:
   name: kube-prometheus-stack
   source:
     repo: https://prometheus-community.github.io/helm-charts
     chart: kube-prometheus-stack
+    version: 70.0.0
   patch:
     file: patches/kube-prometheus-stack.patch
   output:

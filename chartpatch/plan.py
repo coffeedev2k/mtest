@@ -1,25 +1,41 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .config import ChartPatchConfig
 
 
+@dataclass(frozen=True)
+class Plan:
+    chart_name: str
+    source_repo: str
+    source_chart: str
+    source_version: str
+    patch_file: str
+    registry_url: str
+    output_chart_ref: str
+    helm_lint: bool
+    helm_template: bool
+
+
+def build_plan(config: ChartPatchConfig) -> Plan:
+    return Plan(
+        chart_name=config.chart.name,
+        source_repo=config.chart.source.repo,
+        source_chart=config.chart.source.chart,
+        source_version=config.chart.source.version,
+        patch_file=config.chart.patch.file,
+        registry_url=config.registry.url,
+        output_chart_ref=config.chart.output.chart_ref,
+        helm_lint=config.chart.verification.helm_lint,
+        helm_template=config.chart.verification.helm_template,
+    )
+
+
 def render_plan(config: ChartPatchConfig) -> str:
-    verification = config.chart.verification
-    lines = [
-        "ChartPatch execution plan",
-        f"Configured chart name: {config.chart.name}",
-        f"Source chart repo: {config.chart.source.repo}",
-        f"Source chart name: {config.chart.source.chart}",
-        f"Source chart version: {config.chart.source.version}",
-        f"Configured patch file: {config.chart.patch.file}",
-        f"Local registry URL: {config.registry.url}",
-        f"Output OCI chart reference: {config.chart.output.chart_ref}",
-        "Verification steps:",
-        f"  helm_lint: {_enabled(verification.helm_lint)}",
-        f"  helm_template: {_enabled(verification.helm_template)}",
-        "No remote mutation: plan only reads the config and prints this plan.",
-    ]
-    return "\n".join(lines) + "\n"
+    from .report import render_plan as render_plan_report
+
+    return render_plan_report(build_plan(config))
 
 
 def _enabled(value: bool) -> str:
