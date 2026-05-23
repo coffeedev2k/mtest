@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
@@ -7,6 +8,40 @@ import yaml
 
 class ManifestImageDiscoveryError(ValueError):
     """Raised when rendered manifests cannot provide container images."""
+
+
+class ImageTargetMappingError(ValueError):
+    """Raised when image target mappings cannot be built deterministically."""
+
+
+@dataclass(frozen=True)
+class ImageTargetMapping:
+    source: str
+    target: str
+
+
+def map_image_targets(
+    source_images: tuple[str, ...],
+    registry_url: str,
+) -> tuple[ImageTargetMapping, ...]:
+    """Map source image references to deterministic local-registry targets."""
+    registry_prefix = registry_url.rstrip("/")
+    if not registry_prefix:
+        raise ImageTargetMappingError("registry URL must not be empty")
+
+    unique_sources = tuple(sorted(set(source_images)))
+    mappings = tuple(
+        ImageTargetMapping(
+            source=source,
+            target=f"{registry_prefix}/{source}",
+        )
+        for source in unique_sources
+    )
+    if len(mappings) != len(unique_sources):
+        raise ImageTargetMappingError(
+            "image target mapping failed: expected exactly one target per source image"
+        )
+    return mappings
 
 
 def discover_manifest_images(rendered_manifests: str) -> tuple[str, ...]:

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from chartpatch.images import ManifestImageDiscoveryError, discover_manifest_images
+from chartpatch.images import (
+    ImageTargetMapping,
+    ImageTargetMappingError,
+    ManifestImageDiscoveryError,
+    discover_manifest_images,
+    map_image_targets,
+)
 
 
 def test_discovers_image_from_containers() -> None:
@@ -145,3 +151,92 @@ spec:
 """
 
     assert discover_manifest_images(rendered) == ("registry.example.com/app:1.0.0",)
+
+
+def test_maps_image_targets_for_docker_hub_and_non_docker_registries() -> None:
+    assert map_image_targets(
+        (
+            "docker.io/bitnami/nginx:1.27.4",
+            "quay.io/prometheus/prometheus:v3.0.1",
+        ),
+        "localhost:5000",
+    ) == (
+        ImageTargetMapping(
+            source="docker.io/bitnami/nginx:1.27.4",
+            target="localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+        ImageTargetMapping(
+            source="quay.io/prometheus/prometheus:v3.0.1",
+            target="localhost:5000/quay.io/prometheus/prometheus:v3.0.1",
+        ),
+    )
+
+
+def test_maps_image_targets_preserves_tags_and_digests() -> None:
+    assert map_image_targets(
+        (
+            "registry.example.com/app@sha256:0123456789abcdef",
+            "registry.example.com/worker:2.0.0",
+        ),
+        "localhost:5000",
+    ) == (
+        ImageTargetMapping(
+            source="registry.example.com/app@sha256:0123456789abcdef",
+            target=(
+                "localhost:5000/"
+                "registry.example.com/app@sha256:0123456789abcdef"
+            ),
+        ),
+        ImageTargetMapping(
+            source="registry.example.com/worker:2.0.0",
+            target="localhost:5000/registry.example.com/worker:2.0.0",
+        ),
+    )
+
+
+def test_maps_image_targets_deduplicates_and_sorts_sources() -> None:
+    assert map_image_targets(
+        (
+            "quay.io/prometheus/prometheus:v3.0.1",
+            "docker.io/bitnami/nginx:1.27.4",
+            "quay.io/prometheus/prometheus:v3.0.1",
+        ),
+        "localhost:5000",
+    ) == (
+        ImageTargetMapping(
+            source="docker.io/bitnami/nginx:1.27.4",
+            target="localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+        ImageTargetMapping(
+            source="quay.io/prometheus/prometheus:v3.0.1",
+            target="localhost:5000/quay.io/prometheus/prometheus:v3.0.1",
+        ),
+    )
+
+
+def test_maps_image_targets_handles_trailing_registry_slash() -> None:
+    assert map_image_targets(
+        ("docker.io/bitnami/nginx:1.27.4",),
+        "localhost:5000/",
+    ) == (
+        ImageTargetMapping(
+            source="docker.io/bitnami/nginx:1.27.4",
+            target="localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+    )
+
+
+def test_maps_image_targets_does_not_normalize_source_image() -> None:
+    assert map_image_targets(("nginx:latest",), "localhost:5000") == (
+        ImageTargetMapping(
+            source="nginx:latest",
+            target="localhost:5000/nginx:latest",
+        ),
+    )
+
+
+def test_maps_image_targets_fails_clearly_for_empty_registry_url() -> None:
+    with pytest.raises(ImageTargetMappingError) as exc_info:
+        map_image_targets(("docker.io/bitnami/nginx:1.27.4",), "/")
+
+    assert "registry URL must not be empty" in str(exc_info.value)

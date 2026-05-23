@@ -6,6 +6,7 @@ import tarfile
 import pytest
 
 from chartpatch.config import validate_config
+from chartpatch.images import ImageTargetMapping
 from chartpatch.runner import CommandResult
 from chartpatch.workflow import SyncWorkflowError, render_sync_report, run_sync
 
@@ -106,10 +107,28 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "docker.io/bitnami/nginx:1.27.4",
         "registry.example.com/setup:1.0.0",
     )
+    assert result.image_target_mappings == (
+        ImageTargetMapping(
+            source="docker.io/bitnami/nginx:1.27.4",
+            target="localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+        ImageTargetMapping(
+            source="registry.example.com/setup:1.0.0",
+            target="localhost:5000/registry.example.com/setup:1.0.0",
+        ),
+    )
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
         ("helm", "template"),
     ]
+    assert all(
+        call[:2] not in {("skopeo", "copy"), ("git", "apply")}
+        for call in runner.calls
+    )
+    assert all(
+        call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
 
     pull_args = runner.calls[0]
     assert pull_args == (
@@ -142,6 +161,16 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert "Discovered images: 2" in report
     assert "  - docker.io/bitnami/nginx:1.27.4" in report
     assert "  - registry.example.com/setup:1.0.0" in report
+    assert "Image target mappings: 2" in report
+    assert (
+        "  - docker.io/bitnami/nginx:1.27.4 -> "
+        "localhost:5000/docker.io/bitnami/nginx:1.27.4"
+    ) in report
+    assert (
+        "  - registry.example.com/setup:1.0.0 -> "
+        "localhost:5000/registry.example.com/setup:1.0.0"
+    ) in report
+    assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:

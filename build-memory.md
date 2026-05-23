@@ -15,3 +15,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/012/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/013
   - commit: a974967
+- Task cycle 3: Task: Add Rendered-Manifest Image Discovery
+  - task_file: /home/atarasov/l/mtest/runs/014/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/015
+  - commit: 77f4732

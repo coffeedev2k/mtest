@@ -6,7 +6,13 @@ import tarfile
 import tempfile
 
 from .config import ChartPatchConfig
-from .images import ManifestImageDiscoveryError, discover_manifest_images
+from .images import (
+    ImageTargetMapping,
+    ImageTargetMappingError,
+    ManifestImageDiscoveryError,
+    discover_manifest_images,
+    map_image_targets,
+)
 from .runner import CommandResult, CommandRunner
 
 
@@ -84,6 +90,7 @@ class SyncResult:
     unpacked_chart_path: Path
     original_render_path: Path
     discovered_images: tuple[str, ...]
+    image_target_mappings: tuple[ImageTargetMapping, ...] = ()
 
 
 class SyncWorkflowError(RuntimeError):
@@ -145,6 +152,17 @@ def run_sync(
         discovered_images = discover_manifest_images(template_result.stdout)
     except ManifestImageDiscoveryError as exc:
         raise SyncWorkflowError(f"image discovery failed: {exc}") from None
+    try:
+        image_target_mappings = map_image_targets(
+            discovered_images,
+            config.registry.url,
+        )
+    except ImageTargetMappingError as exc:
+        raise SyncWorkflowError(f"image target mapping failed: {exc}") from None
+    if len(image_target_mappings) != len(discovered_images):
+        raise SyncWorkflowError(
+            "image target mapping failed: expected exactly one target per discovered image"
+        )
 
     return SyncResult(
         source_repo=config.chart.source.repo,
@@ -155,6 +173,7 @@ def run_sync(
         unpacked_chart_path=unpacked_chart,
         original_render_path=workspace.original_render_path,
         discovered_images=discovered_images,
+        image_target_mappings=image_target_mappings,
     )
 
 
@@ -201,6 +220,12 @@ def render_sync_report(result: SyncResult) -> str:
         f"Discovered images: {len(result.discovered_images)}",
     ]
     lines.extend(f"  - {image}" for image in result.discovered_images)
+    if result.image_target_mappings:
+        lines.append(f"Image target mappings: {len(result.image_target_mappings)}")
+        lines.extend(
+            f"  - {mapping.source} -> {mapping.target}"
+            for mapping in result.image_target_mappings
+        )
     return "\n".join(lines) + "\n"
 
 
