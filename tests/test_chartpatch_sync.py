@@ -48,6 +48,7 @@ class StubRunner:
         pull_result: CommandResult | None = None,
         template_result: CommandResult | None = None,
         skopeo_results: tuple[CommandResult, ...] = (),
+        git_am_result: CommandResult | None = None,
         create_archive: bool = True,
         extra_archive: bool = False,
         archive_chart_dir: str = "kube-prometheus-stack",
@@ -56,14 +57,17 @@ class StubRunner:
         self.pull_result = pull_result
         self.template_result = template_result
         self.skopeo_results = list(skopeo_results)
+        self.git_am_result = git_am_result
         self.create_archive = create_archive
         self.extra_archive = extra_archive
         self.archive_chart_dir = archive_chart_dir
         self.calls: list[tuple[str, ...]] = []
+        self.cwd_by_call: list[Path | None] = []
 
-    def run(self, args: list[str]) -> CommandResult:
+    def run(self, args: list[str], *, cwd: Path | None = None) -> CommandResult:
         call = tuple(args)
         self.calls.append(call)
+        self.cwd_by_call.append(cwd)
         if args[:2] == ["helm", "pull"]:
             destination = Path(args[args.index("--destination") + 1])
             if self.create_archive:
@@ -90,6 +94,18 @@ class StubRunner:
             if self.skopeo_results:
                 return self.skopeo_results.pop(0)
             return CommandResult(call, 0, "copied\n", "")
+        if args[:2] == ["git", "init"]:
+            return CommandResult(call, 0, "initialized\n", "")
+        if args[:2] == ["git", "config"]:
+            return CommandResult(call, 0, "", "")
+        if args[:2] == ["git", "add"]:
+            return CommandResult(call, 0, "", "")
+        if args[:2] == ["git", "commit"]:
+            return CommandResult(call, 0, "[main baseline]\n", "")
+        if args[:3] == ["git", "am", "--reject"]:
+            if self.git_am_result is not None:
+                return self.git_am_result
+            return CommandResult(call, 0, "applied\n", "")
         raise AssertionError(f"unexpected command: {args}")
 
 
@@ -133,16 +149,22 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
             "localhost:5000/registry.example.com/setup:1.0.0",
         ),
     )
+    assert result.applied_patch_file == tmp_path / "patches/kube-prometheus-stack.patch"
     assert [call[:2] for call in runner.calls] == [
         ("helm", "pull"),
         ("helm", "template"),
         ("skopeo", "copy"),
         ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
     ]
     assert all(
         call[:2]
         not in {
-            ("git", "apply"),
             ("helm", "lint"),
             ("helm", "package"),
             ("helm", "push"),
@@ -181,6 +203,15 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "docker://registry.example.com/setup:1.0.0",
         "docker://localhost:5000/registry.example.com/setup:1.0.0",
     )
+    assert runner.calls[4:] == [
+        ("git", "init"),
+        ("git", "config", "user.name", "ChartPatch"),
+        ("git", "config", "user.email", "chartpatch@example.invalid"),
+        ("git", "add", "--all"),
+        ("git", "commit", "-m", "Baseline upstream chart"),
+        ("git", "am", "--reject", str(tmp_path / "patches/kube-prometheus-stack.patch")),
+    ]
+    assert runner.cwd_by_call[4:] == [result.unpacked_chart_path] * 6
 
     report = render_sync_report(result)
     assert "Source chart repo: https://prometheus-community.github.io/helm-charts" in report
@@ -211,8 +242,10 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "  - registry.example.com/setup:1.0.0 -> "
         "localhost:5000/registry.example.com/setup:1.0.0"
     ) in report
+    assert f"Applied patch: {tmp_path / 'patches/kube-prometheus-stack.patch'}" in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
     assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
+    assert report.index("Mirrored images: 2") < report.index("Applied patch:")
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:
@@ -229,6 +262,7 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
     assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
         logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
+    assert (logs_dir / "git-am.stdout.txt").read_text(encoding="utf-8") == "applied\n"
 
 
 def test_sync_fails_when_helm_pull_fails(tmp_path: Path) -> None:
@@ -311,6 +345,49 @@ def test_sync_fails_when_skopeo_copy_fails_and_skips_later_images(tmp_path: Path
         ("helm", "template"),
         ("skopeo", "copy"),
     ]
+    assert all(call[0] != "git" for call in runner.calls)
+
+
+def test_sync_fails_when_patch_application_fails_after_mirroring(tmp_path: Path) -> None:
+    runner = StubRunner(
+        tmp_path,
+        git_am_result=CommandResult(
+            (
+                "git",
+                "am",
+                "--reject",
+                str(tmp_path / "patches/kube-prometheus-stack.patch"),
+            ),
+            128,
+            "patch stdout\n",
+            "patch stderr\n",
+        ),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    message = str(exc_info.value)
+    assert "patch application failed" in message
+    assert "exited with code 128" in message
+    assert "patch stdout" in message
+    assert "patch stderr" in message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+    ]
+    assert all(
+        call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
+        for call in runner.calls
+    )
 
 
 def test_sync_fails_when_original_render_contains_no_images(tmp_path: Path) -> None:
@@ -365,9 +442,10 @@ def test_sync_fails_when_unpacked_chart_directory_is_missing(tmp_path: Path) -> 
 
 def test_sync_fails_when_unpacking_archive_fails(tmp_path: Path) -> None:
     class BadArchiveRunner(StubRunner):
-        def run(self, args: list[str]) -> CommandResult:
+        def run(self, args: list[str], *, cwd: Path | None = None) -> CommandResult:
             call = tuple(args)
             self.calls.append(call)
+            self.cwd_by_call.append(cwd)
             if args[:2] == ["helm", "pull"]:
                 destination = Path(args[args.index("--destination") + 1])
                 (destination / "kube-prometheus-stack-70.0.0.tgz").write_text(

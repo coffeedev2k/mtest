@@ -14,6 +14,7 @@ from .images import (
     map_image_targets,
 )
 from .mirror import ImageMirrorError, MirroredImage, mirror_image_mappings
+from .patch import PatchApplicationError, apply_patch_file
 from .runner import CommandResult, CommandRunner
 
 
@@ -93,6 +94,7 @@ class SyncResult:
     discovered_images: tuple[str, ...]
     image_target_mappings: tuple[ImageTargetMapping, ...] = ()
     mirrored_images: tuple[MirroredImage, ...] = ()
+    applied_patch_file: Path | None = None
 
 
 class SyncWorkflowError(RuntimeError):
@@ -179,6 +181,21 @@ def run_sync(
     except ImageMirrorError as exc:
         raise SyncWorkflowError(str(exc)) from None
 
+    patch_file = _resolve_config_path(repo_root or Path.cwd(), config.chart.patch.file)
+    try:
+        applied_patch = apply_patch_file(
+            unpacked_chart,
+            patch_file,
+            command_runner,
+            on_result=lambda label, result: _write_command_logs(
+                workspace.logs_dir,
+                label,
+                result,
+            ),
+        )
+    except PatchApplicationError as exc:
+        raise SyncWorkflowError(str(exc)) from None
+
     return SyncResult(
         source_repo=config.chart.source.repo,
         source_chart=config.chart.source.chart,
@@ -190,6 +207,7 @@ def run_sync(
         discovered_images=discovered_images,
         image_target_mappings=image_target_mappings,
         mirrored_images=mirrored_images,
+        applied_patch_file=applied_patch.patch_file,
     )
 
 
@@ -247,7 +265,16 @@ def render_sync_report(result: SyncResult) -> str:
         lines.extend(
             f"  - {image.source} -> {image.target}" for image in result.mirrored_images
         )
+    if result.applied_patch_file is not None:
+        lines.append(f"Applied patch: {result.applied_patch_file}")
     return "\n".join(lines) + "\n"
+
+
+def _resolve_config_path(repo_root: Path, configured_path: str) -> Path:
+    path = Path(configured_path)
+    if path.is_absolute():
+        return path
+    return repo_root / path
 
 
 def _source_chart_dir_name(source_chart: str) -> str:
