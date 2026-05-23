@@ -12,7 +12,9 @@ from chartpatch.mirror import MirroredImage
 from chartpatch.rewrite import ImageRewriteError
 from chartpatch.runner import CommandResult
 from chartpatch.workflow import (
+    STAGE_OCI_PUSH,
     STAGE_PACKAGE,
+    STAGE_PATCH_APPLY,
     SyncResult,
     SyncWorkflowError,
     render_sync_failure_report,
@@ -77,6 +79,8 @@ class StubRunner:
         push_result: CommandResult | None = None,
         skopeo_results: tuple[CommandResult, ...] = (),
         git_am_result: CommandResult | None = None,
+        create_reject: bool = False,
+        create_rebase_apply: bool = False,
         create_archive: bool = True,
         create_package: bool = True,
         extra_archive: bool = False,
@@ -92,6 +96,8 @@ class StubRunner:
         self.push_result = push_result
         self.skopeo_results = list(skopeo_results)
         self.git_am_result = git_am_result
+        self.create_reject = create_reject
+        self.create_rebase_apply = create_rebase_apply
         self.create_archive = create_archive
         self.create_package = create_package
         self.extra_archive = extra_archive
@@ -173,6 +179,14 @@ class StubRunner:
         if args[:2] == ["git", "commit"]:
             return CommandResult(call, 0, "[main baseline]\n", "")
         if args[:3] == ["git", "am", "--reject"]:
+            if cwd is not None and self.create_reject:
+                (cwd / "templates").mkdir(exist_ok=True)
+                (cwd / "templates" / "deployment.yaml.rej").write_text(
+                    "rejected hunk\n",
+                    encoding="utf-8",
+                )
+            if cwd is not None and self.create_rebase_apply:
+                (cwd / ".git" / "rebase-apply").mkdir(parents=True, exist_ok=True)
             if self.git_am_result is not None:
                 return self.git_am_result
             return CommandResult(call, 0, "applied\n", "")
@@ -673,6 +687,7 @@ def test_sync_fails_when_helm_package_fails(tmp_path: Path) -> None:
     with pytest.raises(SyncWorkflowError) as exc_info:
         run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
 
+    assert exc_info.value.stage == STAGE_PACKAGE
     message = str(exc_info.value)
     assert "helm package failed" in message
     assert "exited with code 44" in message
@@ -695,6 +710,11 @@ def test_sync_fails_when_helm_package_fails(tmp_path: Path) -> None:
         ("helm", "package"),
     ]
     assert all(call[:2] != ("helm", "push") for call in runner.calls)
+    report = render_sync_failure_report(exc_info.value)
+    assert "ChartPatch sync failed" in report
+    assert "Failed stage: package" in report
+    assert "helm package failed" in report
+    assert "package stderr" in report
 
 
 def test_sync_fails_when_helm_push_fails(tmp_path: Path) -> None:
@@ -711,6 +731,7 @@ def test_sync_fails_when_helm_push_fails(tmp_path: Path) -> None:
     with pytest.raises(SyncWorkflowError) as exc_info:
         run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
 
+    assert exc_info.value.stage == STAGE_OCI_PUSH
     message = str(exc_info.value)
     assert "helm push failed" in message
     assert "exited with code 45" in message
@@ -720,6 +741,11 @@ def test_sync_fails_when_helm_push_fails(tmp_path: Path) -> None:
         ("helm", "package"),
         ("helm", "push"),
     ]
+    report = render_sync_failure_report(exc_info.value)
+    assert "ChartPatch sync failed" in report
+    assert "Failed stage: OCI push" in report
+    assert "helm push failed" in report
+    assert "push stderr" in report
 
 
 def test_sync_rejects_non_oci_chart_ref_before_helm_push(tmp_path: Path) -> None:
@@ -859,6 +885,55 @@ def test_sync_fails_when_patch_application_fails_after_mirroring(tmp_path: Path)
         call[:2] not in {("helm", "lint"), ("helm", "package"), ("helm", "push")}
         for call in runner.calls
     )
+
+
+@pytest.mark.parametrize(
+    ("runner_kwargs", "expected_message"),
+    [
+        ({"create_reject": True}, "reject files remain"),
+        ({"create_rebase_apply": True}, "unfinished git am state remains"),
+    ],
+)
+def test_sync_fails_when_patch_application_leaves_artifacts(
+    tmp_path: Path,
+    runner_kwargs: dict[str, bool],
+    expected_message: str,
+) -> None:
+    runner = StubRunner(tmp_path, **runner_kwargs)
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+
+    error = exc_info.value
+    assert error.stage == STAGE_PATCH_APPLY
+    assert expected_message in error.message
+    assert [call[:2] for call in runner.calls] == [
+        ("helm", "pull"),
+        ("helm", "template"),
+        ("skopeo", "copy"),
+        ("skopeo", "copy"),
+        ("git", "init"),
+        ("git", "config"),
+        ("git", "config"),
+        ("git", "add"),
+        ("git", "commit"),
+        ("git", "am"),
+    ]
+    assert all(
+        call[:2]
+        not in {
+            ("helm", "template"),
+            ("helm", "lint"),
+            ("helm", "package"),
+            ("helm", "push"),
+        }
+        for call in runner.calls[10:]
+    )
+
+    report = render_sync_failure_report(error)
+    assert "ChartPatch sync failed" in report
+    assert "Failed stage: patch apply" in report
+    assert expected_message in report
 
 
 def test_sync_fails_when_original_render_contains_no_images(tmp_path: Path) -> None:

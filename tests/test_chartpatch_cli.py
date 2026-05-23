@@ -9,7 +9,13 @@ import pytest
 from chartpatch import cli
 from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
-from chartpatch.workflow import STAGE_IMAGE_DISCOVERY, SyncResult, SyncWorkflowError
+from chartpatch.workflow import (
+    STAGE_IMAGE_DISCOVERY,
+    STAGE_OCI_PUSH,
+    STAGE_PACKAGE,
+    SyncResult,
+    SyncWorkflowError,
+)
 
 
 FIXTURES = Path("tests/fixtures/chartpatch")
@@ -240,6 +246,60 @@ def test_sync_no_discovered_images_exits_nonzero(monkeypatch, capsys) -> None:
     assert captured.out == ""
     assert "Failed stage: image discovery" in captured.err
     assert "no discoverable container images" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("stage", "message", "expected_stage"),
+    [
+        (
+            STAGE_PACKAGE,
+            "helm package failed: helm package chart --destination packages exited with code 44\n"
+            "stderr:\npackage denied",
+            "package",
+        ),
+        (
+            STAGE_OCI_PUSH,
+            "helm push failed: helm push chart.tgz oci://localhost:5000/helm/chart "
+            "exited with code 45\nstderr:\npush denied",
+            "OCI push",
+        ),
+    ],
+)
+def test_sync_late_stage_failures_exit_nonzero_with_structured_report(
+    monkeypatch,
+    capsys,
+    stage: str,
+    message: str,
+    expected_stage: str,
+) -> None:
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+
+    def fail_sync(config) -> SyncResult:
+        raise SyncWorkflowError(
+            message,
+            stage=stage,
+            source_repo=config.chart.source.repo,
+            source_chart=config.chart.source.chart,
+            source_version=config.chart.source.version,
+            workspace_path=Path("tmp/chartpatch-sync-failed"),
+        )
+
+    monkeypatch.setattr(cli, "run_sync", fail_sync)
+
+    result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "ChartPatch sync failed" in captured.err
+    assert f"Failed stage: {expected_stage}" in captured.err
+    assert "Source chart repo: https://prometheus-community.github.io/helm-charts" in (
+        captured.err
+    )
+    assert "Source chart name: kube-prometheus-stack" in captured.err
+    assert "Source chart version: 70.0.0" in captured.err
+    assert "Workspace path: tmp/chartpatch-sync-failed" in captured.err
+    assert message in captured.err
 
 
 def test_sync_invalid_fixture_reports_plan_consistent_validation_error() -> None:
