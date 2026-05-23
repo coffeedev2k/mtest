@@ -9,7 +9,7 @@ import pytest
 from chartpatch import cli
 from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
-from chartpatch.workflow import SyncResult, SyncWorkflowError
+from chartpatch.workflow import STAGE_IMAGE_DISCOVERY, SyncResult, SyncWorkflowError
 
 
 FIXTURES = Path("tests/fixtures/chartpatch")
@@ -156,6 +156,7 @@ def test_sync_valid_fixture_exits_nonzero_when_dependency_is_missing(monkeypatch
     captured = capsys.readouterr()
     assert result == 1
     assert captured.out == ""
+    assert "Failed stage: dependency check" in captured.err
     assert "missing required runtime dependency: skopeo" in captured.err
 
 
@@ -168,6 +169,9 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
             source_repo=config.chart.source.repo,
             source_chart=config.chart.source.chart,
             source_version=config.chart.source.version,
+            patch_file=config.chart.patch.file,
+            registry_url=config.registry.url,
+            output_chart_ref=config.chart.output.chart_ref,
             workspace_path=Path("tmp/chartpatch-sync-test"),
             chart_archive_path=Path(
                 "tmp/chartpatch-sync-test/downloaded/kube-prometheus-stack-70.0.0.tgz"
@@ -195,6 +199,9 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
         "Source chart repo: https://prometheus-community.github.io/helm-charts\n"
         "Source chart name: kube-prometheus-stack\n"
         "Source chart version: 70.0.0\n"
+        "Configured patch file: patches/kube-prometheus-stack.patch\n"
+        "Local registry URL: localhost:5000\n"
+        "Output OCI chart reference: oci://localhost:5000/helm/kube-prometheus-stack\n"
         "Workspace path: tmp/chartpatch-sync-test\n"
         "Pulled chart archive: tmp/chartpatch-sync-test/downloaded/kube-prometheus-stack-70.0.0.tgz\n"
         "Unpacked chart path: tmp/chartpatch-sync-test/unpacked/kube-prometheus-stack\n"
@@ -202,8 +209,13 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
         "Discovered images: 2\n"
         "  - docker.io/bitnami/nginx:1.27.4\n"
         "  - registry.example.com/setup:1.0.0\n"
+        "Image mirroring summary:\n"
+        "  Mirrored images: 0\n"
+        "Patch application status: skipped\n"
+        "Image rewrite verification status: skipped\n"
         "Final helm lint verification: skipped\n"
         "Final helm template verification: skipped\n"
+        "Overall status: success\n"
     )
 
 
@@ -212,7 +224,11 @@ def test_sync_no_discovered_images_exits_nonzero(monkeypatch, capsys) -> None:
 
     def fail_with_no_images(config) -> SyncResult:
         raise SyncWorkflowError(
-            "image discovery failed: rendered manifests contain no discoverable container images"
+            "image discovery failed: rendered manifests contain no discoverable container images",
+            stage=STAGE_IMAGE_DISCOVERY,
+            source_repo=config.chart.source.repo,
+            source_chart=config.chart.source.chart,
+            source_version=config.chart.source.version,
         )
 
     monkeypatch.setattr(cli, "run_sync", fail_with_no_images)
@@ -222,6 +238,7 @@ def test_sync_no_discovered_images_exits_nonzero(monkeypatch, capsys) -> None:
     captured = capsys.readouterr()
     assert result == 1
     assert captured.out == ""
+    assert "Failed stage: image discovery" in captured.err
     assert "no discoverable container images" in captured.err
 
 
@@ -257,6 +274,7 @@ def test_sync_missing_dependency_fails_before_workflow_execution(monkeypatch, ca
     assert cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
+    assert "Failed stage: dependency check" in captured.err
     assert "missing required runtime dependency: helm" in captured.err
 
 

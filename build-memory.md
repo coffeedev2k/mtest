@@ -43,3 +43,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/028/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/029
   - commit: 7a9dd82
+- Task cycle 4: Task: Add Patched Chart Packaging And OCI Push To `chartpatch sync`
+  - task_file: /home/atarasov/l/mtest/runs/030/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/031
+  - commit: d0836a1

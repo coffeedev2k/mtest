@@ -8,7 +8,13 @@ from .config import ConfigError, load_config
 from .dependencies import MissingRuntimeDependencies, check_required_binaries
 from .plan import build_plan
 from .report import render_plan
-from .workflow import SyncWorkflowError, render_sync_report, run_sync
+from .workflow import (
+    STAGE_DEPENDENCY_CHECK,
+    SyncWorkflowError,
+    render_sync_failure_report,
+    render_sync_report,
+    run_sync,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,10 +52,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         except MissingRuntimeDependencies as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            print(
+                render_sync_failure_report(
+                    SyncWorkflowError(
+                        str(exc),
+                        stage=STAGE_DEPENDENCY_CHECK,
+                        source_repo=config.chart.source.repo,
+                        source_chart=config.chart.source.chart,
+                        source_version=config.chart.source.version,
+                    )
+                ),
+                end="",
+                file=sys.stderr,
+            )
             return 1
         except SyncWorkflowError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            print(render_sync_failure_report(exc), end="", file=sys.stderr)
             return 1
         print(render_sync_report(result), end="")
         return 0

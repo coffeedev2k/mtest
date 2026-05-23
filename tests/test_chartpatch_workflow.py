@@ -21,16 +21,16 @@ VALID_CONFIG = {
 
 
 EXPECTED_SYNC_STAGE_NAMES = (
-    "pull chart",
-    "render original chart",
-    "discover images",
-    "mirror images",
-    "apply patch",
-    "rewrite images",
-    "verify patched render",
-    "verify final chart",
-    "package chart",
-    "push chart",
+    "chart pull",
+    "original render",
+    "image discovery",
+    "image mirror",
+    "patch apply",
+    "image rewrite",
+    "rewrite verification",
+    "final verification",
+    "package",
+    "OCI push",
 )
 
 
@@ -59,9 +59,9 @@ def test_render_sync_summary_includes_required_fields_and_ordered_stages() -> No
     assert "Patch file: patches/kube-prometheus-stack.patch" in output
     assert "Local registry URL: localhost:5000" in output
     assert "Output OCI chart reference: oci://localhost:5000/helm/kube-prometheus-stack" in output
-    assert "Planned sync stages:\n  1. pull chart\n  2. render original chart" in output
-    assert "  6. rewrite images\n  7. verify patched render\n  8. verify final chart\n" in output
-    assert "  9. package chart\n  10. push chart\n" in output
+    assert "Planned sync stages:\n  1. chart pull\n  2. original render" in output
+    assert "  6. image rewrite\n  7. rewrite verification\n  8. final verification\n" in output
+    assert "  9. package\n  10. OCI push\n" in output
     assert (
         "Remote mutation occurs only after verification, packaging, and push gates pass."
         in output

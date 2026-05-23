@@ -8,9 +8,17 @@ import pytest
 import chartpatch.workflow as workflow
 from chartpatch.config import validate_config
 from chartpatch.images import ImageTargetMapping
+from chartpatch.mirror import MirroredImage
 from chartpatch.rewrite import ImageRewriteError
 from chartpatch.runner import CommandResult
-from chartpatch.workflow import SyncWorkflowError, render_sync_report, run_sync
+from chartpatch.workflow import (
+    STAGE_PACKAGE,
+    SyncResult,
+    SyncWorkflowError,
+    render_sync_failure_report,
+    render_sync_report,
+    run_sync,
+)
 
 
 VALID_CONFIG = {
@@ -343,6 +351,12 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert "Source chart repo: https://prometheus-community.github.io/helm-charts" in report
     assert "Source chart name: kube-prometheus-stack" in report
     assert "Source chart version: 70.0.0" in report
+    assert "Configured patch file: patches/kube-prometheus-stack.patch" in report
+    assert "Local registry URL: localhost:5000" in report
+    assert (
+        "Output OCI chart reference: oci://localhost:5000/helm/kube-prometheus-stack"
+        in report
+    )
     assert f"Workspace path: {result.workspace_path}" in report
     assert f"Pulled chart archive: {result.chart_archive_path}" in report
     assert f"Unpacked chart path: {result.unpacked_chart_path}" in report
@@ -359,15 +373,17 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "  - registry.example.com/setup:1.0.0 -> "
         "localhost:5000/registry.example.com/setup:1.0.0"
     ) in report
-    assert "Mirrored images: 2" in report
+    assert "Image mirroring summary:" in report
+    assert "  Mirrored images: 2" in report
     assert (
         "  - docker.io/bitnami/nginx:1.27.4 -> "
-        "localhost:5000/docker.io/bitnami/nginx:1.27.4"
+        "localhost:5000/docker.io/bitnami/nginx:1.27.4: passed"
     ) in report
     assert (
         "  - registry.example.com/setup:1.0.0 -> "
-        "localhost:5000/registry.example.com/setup:1.0.0"
+        "localhost:5000/registry.example.com/setup:1.0.0: passed"
     ) in report
+    assert "Patch application status: passed" in report
     assert f"Applied patch: {tmp_path / 'patches/kube-prometheus-stack.patch'}" in report
     assert "Image rewrites: 2" in report
     assert (
@@ -381,7 +397,7 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert "Image rewrite replacements: 2" in report
     assert "  - values.yaml" in report
     assert f"Patched render output: {result.patched_render_path}" in report
-    assert "Patched render verification: passed" in report
+    assert "Image rewrite verification status: passed" in report
     assert "Final rendered images: 2" in report
     assert "  - localhost:5000/docker.io/bitnami/nginx:1.27.4" in report
     assert "  - localhost:5000/registry.example.com/setup:1.0.0" in report
@@ -392,15 +408,16 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "Pushed OCI chart reference: "
         "oci://localhost:5000/helm/kube-prometheus-stack"
     ) in report
+    assert "Overall status: success" in report
     assert report.index("Discovered images: 2") < report.index("Image target mappings: 2")
-    assert report.index("Image target mappings: 2") < report.index("Mirrored images: 2")
-    assert report.index("Mirrored images: 2") < report.index("Applied patch:")
+    assert report.index("Image target mappings: 2") < report.index("  Mirrored images: 2")
+    assert report.index("  Mirrored images: 2") < report.index("Applied patch:")
     assert report.index("Applied patch:") < report.index("Image rewrites: 2")
     assert report.index("Image rewrites: 2") < report.index("Image rewrite replacements: 2")
     assert report.index("Image rewrite replacements: 2") < report.index(
-        "Patched render verification: passed"
+        "Image rewrite verification status: passed"
     )
-    assert report.index("Patched render verification: passed") < report.index(
+    assert report.index("Image rewrite verification status: passed") < report.index(
         "Final helm lint verification: passed"
     )
     assert report.index("Final helm lint verification: passed") < report.index(
@@ -412,6 +429,61 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert report.index("Packaged chart:") < report.index(
         "Pushed OCI chart reference:"
     )
+
+
+def test_sync_report_renders_image_sections_in_deterministic_order(tmp_path: Path) -> None:
+    result = SyncResult(
+        source_repo="https://example.test/charts",
+        source_chart="example",
+        source_version="1.2.3",
+        patch_file="patches/example.patch",
+        registry_url="localhost:5000",
+        output_chart_ref="oci://localhost:5000/helm/example",
+        workspace_path=tmp_path / "workspace",
+        chart_archive_path=tmp_path / "workspace/downloaded/example-1.2.3.tgz",
+        unpacked_chart_path=tmp_path / "workspace/unpacked/example",
+        original_render_path=tmp_path / "workspace/rendered/original.yaml",
+        discovered_images=("z.example/app:1", "a.example/app:1"),
+        image_target_mappings=(
+            ImageTargetMapping("z.example/app:1", "localhost:5000/z.example/app:1"),
+            ImageTargetMapping("a.example/app:1", "localhost:5000/a.example/app:1"),
+        ),
+        mirrored_images=(
+            MirroredImage("z.example/app:1", "localhost:5000/z.example/app:1"),
+            MirroredImage("a.example/app:1", "localhost:5000/a.example/app:1"),
+        ),
+    )
+
+    report = render_sync_report(result)
+
+    assert report.index("  - a.example/app:1\n") < report.index("  - z.example/app:1\n")
+    assert report.index("  - a.example/app:1 -> localhost:5000/a.example/app:1") < (
+        report.index("  - z.example/app:1 -> localhost:5000/z.example/app:1")
+    )
+    assert (
+        report.index("  - a.example/app:1 -> localhost:5000/a.example/app:1: passed")
+        < report.index("  - z.example/app:1 -> localhost:5000/z.example/app:1: passed")
+    )
+
+
+def test_sync_failure_report_includes_stage_error_and_partial_context(tmp_path: Path) -> None:
+    error = SyncWorkflowError(
+        "helm package failed: exited with code 44",
+        stage=STAGE_PACKAGE,
+        source_repo="https://example.test/charts",
+        source_chart="example",
+        source_version="1.2.3",
+        workspace_path=tmp_path / "workspace",
+    )
+
+    report = render_sync_failure_report(error)
+
+    assert "Failed stage: package" in report
+    assert "helm package failed: exited with code 44" in report
+    assert "Source chart repo: https://example.test/charts" in report
+    assert "Source chart name: example" in report
+    assert "Source chart version: 1.2.3" in report
+    assert f"Workspace path: {tmp_path / 'workspace'}" in report
 
 
 def test_sync_logs_command_output(tmp_path: Path) -> None:
