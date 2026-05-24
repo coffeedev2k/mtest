@@ -123,3 +123,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/072/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/073
   - commit: 9b46aee
+- Task cycle 8: Task: Align Multi-Chart Sync Workflow Boundary
+  - task_file: /home/atarasov/l/mtest/runs/074/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/075
+  - commit: 0b2f915
