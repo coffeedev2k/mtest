@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 KYVERNO_FIXTURE = REPO_ROOT / "tests/fixtures/chartpatch/e2e/kyverno/config.yaml"
 KYVERNO_PATCH = (
     REPO_ROOT
-    / "tests/fixtures/chartpatch/e2e/kyverno/patches/use-literal-images.patch"
+    / "tests/fixtures/chartpatch/e2e/kyverno/patches/add-fixture-annotation.patch"
 )
 
 
@@ -36,9 +36,39 @@ def test_kyverno_e2e_fixture_is_pinned_and_targets_local_registry() -> None:
     assert is_localhost_5000_oci_ref(config.chart.output.chart_ref)
     assert config.chart.output.chart_ref == "oci://localhost:5000/helm/kyverno"
     assert config.chart.patch.file == (
-        "tests/fixtures/chartpatch/e2e/kyverno/patches/use-literal-images.patch"
+        "tests/fixtures/chartpatch/e2e/kyverno/patches/add-fixture-annotation.patch"
     )
-    assert KYVERNO_PATCH.read_text(encoding="utf-8").startswith("From ")
+    assert config.chart.verification.helm_lint is True
+    assert config.chart.verification.helm_template is True
+
+    patch_text = KYVERNO_PATCH.read_text(encoding="utf-8")
+    assert patch_text.startswith("From ")
+    assert 'chartpatch.dev/fixture: "kyverno-e2e-pinned"' in patch_text
+
+
+def test_chartpatch_plan_kyverno_fixture_reports_pinned_inputs() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "chartpatch", "plan", str(KYVERNO_FIXTURE)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stderr == ""
+    assert "Source chart repo: https://kyverno.github.io/kyverno/" in completed.stdout
+    assert "Source chart name: kyverno" in completed.stdout
+    assert "Source chart version: 3.8.1" in completed.stdout
+    assert (
+        "Configured patch file: "
+        "tests/fixtures/chartpatch/e2e/kyverno/patches/add-fixture-annotation.patch"
+        in completed.stdout
+    )
+    assert "Local registry URL: localhost:5000" in completed.stdout
+    assert "Output OCI chart reference: oci://localhost:5000/helm/kyverno" in completed.stdout
+    assert "  helm_lint: enabled" in completed.stdout
+    assert "  helm_template: enabled" in completed.stdout
 
 
 @pytest.mark.e2e

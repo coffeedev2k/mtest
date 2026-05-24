@@ -59,3 +59,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/036/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/037
   - commit: a0b5ab2
+- Task cycle 1: Task: Add Developer-Facing Documentation For `chartpatch`
+  - task_file: /home/atarasov/l/mtest/runs/040/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/041
+  - commit: 9d38b47

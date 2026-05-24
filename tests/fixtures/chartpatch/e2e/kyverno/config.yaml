@@ -8,7 +8,7 @@ chart:
     chart: kyverno
     version: 3.8.1
   patch:
-    file: tests/fixtures/chartpatch/e2e/kyverno/patches/use-literal-images.patch
+    file: tests/fixtures/chartpatch/e2e/kyverno/patches/add-fixture-annotation.patch
   output:
     chart_ref: oci://localhost:5000/helm/kyverno
   verification:
