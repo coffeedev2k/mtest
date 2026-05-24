@@ -22,6 +22,7 @@ include = ["agent_factory*", "chartpatch*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = ["-m", "not e2e"]
 markers = [
   "e2e: opt-in end-to-end tests gated by CHARTPATCH_RUN_E2E=1",
 ]

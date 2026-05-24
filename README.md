@@ -18,8 +18,8 @@ Install these tools before running `chartpatch sync`:
 - `skopeo`
 - Docker-compatible runtime for running a local Registry v2 instance
 
-`k3s` is optional and only needed for full local end-to-end validation that
-installs the patched chart into a Kubernetes cluster.
+Full local end-to-end validation is opt-in and also requires `kubectl` plus
+`k3d`, which starts a local `k3s` cluster for installing the patched chart.
 
 ## Local registry
 
@@ -116,6 +116,19 @@ At a practical workflow level, `sync`:
 
 `sync` mutates the configured local registry by pushing mirrored images and the
 patched chart. The MVP assumes the local registry is unauthenticated.
+
+## End-to-end validation
+
+The Kyverno E2E harness is excluded from default pytest runs. To run it, opt in
+with both the environment gate and marker selection:
+
+```bash
+CHARTPATCH_RUN_E2E=1 python -m pytest -q -m e2e tests/test_chartpatch_e2e_kyverno.py
+```
+
+If Docker or a compatible runtime, local registry support, `k3d`/`k3s`, `helm`,
+`skopeo`, required permissions, or upstream network access is unavailable, the
+harness reports an explicit skip reason for the failed prerequisite stage.
 
 ## Patch creation
 

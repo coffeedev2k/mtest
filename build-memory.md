@@ -67,3 +67,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/042/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/043
   - commit: d0c4f29
+- Task cycle 3: Task: Add Opt-In Kyverno E2E Harness
+  - task_file: /home/atarasov/l/mtest/runs/044/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/045
+  - commit: 2772378

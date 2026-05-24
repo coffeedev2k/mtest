@@ -12,12 +12,14 @@ from tests.e2e_support import (
     ClusterUnavailable,
     E2E_ENV_VAR,
     RegistryUnavailable,
+    cleanup_helm_release_and_namespace,
+    collect_e2e_prerequisite_skip_reasons,
     delete_k3d_cluster,
     e2e_enabled,
     ensure_k3d_cluster,
     ensure_local_registry,
+    format_e2e_skip,
     is_localhost_5000_oci_ref,
-    missing_required_tools,
     oci_chart_ref_candidates,
     pod_container_images,
     stop_local_registry,
@@ -121,16 +123,7 @@ def _find_installable_chart_ref(chart_ref: str, chart_name: str, version: str) -
 
 
 def _cleanup_kyverno_release(namespace: str, release: str) -> None:
-    _run(
-        ["helm", "uninstall", release, "--namespace", namespace, "--ignore-not-found"],
-        timeout=180,
-        check=False,
-    )
-    _run(
-        ["kubectl", "delete", "namespace", namespace, "--ignore-not-found=true"],
-        timeout=180,
-        check=False,
-    )
+    cleanup_helm_release_and_namespace(namespace, release)
 
 
 def _install_kyverno_chart(chart_ref: str, version: str, namespace: str, release: str) -> None:
@@ -203,9 +196,9 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
     if not e2e_enabled():
         pytest.skip(f"set {E2E_ENV_VAR}=1 to run chartpatch E2E tests")
 
-    missing = missing_required_tools()
-    if missing:
-        pytest.skip(f"missing E2E dependency: {', '.join(missing)}")
+    skip_reasons = collect_e2e_prerequisite_skip_reasons()
+    if skip_reasons:
+        pytest.skip(format_e2e_skip(skip_reasons))
 
     config = load_config(KYVERNO_FIXTURE)
     namespace = "chartpatch-kyverno-e2e"
@@ -215,13 +208,13 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
     try:
         registry = ensure_local_registry()
     except RegistryUnavailable as exc:
-        pytest.skip(f"missing E2E dependency: {exc}")
+        pytest.skip(format_e2e_skip([str(exc)]))
 
     try:
         try:
             cluster = ensure_k3d_cluster(registry=config.registry.url)
         except ClusterUnavailable as exc:
-            pytest.skip(f"missing E2E dependency: {exc}")
+            pytest.skip(format_e2e_skip([f"local k3s cluster: {exc}"]))
 
         _cleanup_kyverno_release(namespace, release)
 

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -19,6 +19,10 @@ REGISTRY_IMAGE = "registry:2"
 K3D_CLUSTER_NAME = "chartpatch-e2e"
 REQUIRED_E2E_TOOLS = ("helm", "git", "skopeo", "kubectl", "k3d")
 CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
+REQUIRED_NETWORK_ENDPOINTS = (
+    ("upstream chart repository", "https://kyverno.github.io/kyverno/index.yaml"),
+    ("upstream Kyverno image registry", "https://ghcr.io/v2/"),
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,10 @@ class ClusterUnavailable(RuntimeError):
     pass
 
 
+RunCommand = Callable[..., subprocess.CompletedProcess[str]]
+OpenUrl = Callable[..., object]
+
+
 def e2e_enabled(environ: Mapping[str, str] = os.environ) -> bool:
     return environ.get(E2E_ENV_VAR) == "1"
 
@@ -61,6 +69,162 @@ def first_available_runtime(
     which: Callable[[str], str | None] = shutil.which,
 ) -> str | None:
     return next((runtime for runtime in runtimes if which(runtime) is not None), None)
+
+
+def executable_display_name(executable: str) -> str:
+    if executable == "k3d":
+        return "local k3s cluster manager (k3d)"
+    return executable
+
+
+def format_skip_reason(stage: str, dependency: str, detail: str) -> str:
+    return f"{stage}: {dependency}: {detail}"
+
+
+def missing_executable_skip_reasons(
+    *,
+    required: Sequence[str] = REQUIRED_E2E_TOOLS,
+    which: Callable[[str], str | None] = shutil.which,
+) -> tuple[str, ...]:
+    return tuple(
+        format_skip_reason(
+            "executable check",
+            executable_display_name(tool),
+            "executable not found on PATH",
+        )
+        for tool in missing_required_tools(required=required, which=which)
+    )
+
+
+def _command_failure_detail(
+    command: Sequence[str],
+    *,
+    run: RunCommand = subprocess.run,
+    timeout_seconds: float = 15.0,
+) -> str | None:
+    try:
+        completed = run(
+            list(command),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError:
+        return "executable not found on PATH"
+    except PermissionError as exc:
+        return f"permission denied while running command: {exc}"
+    except subprocess.TimeoutExpired:
+        return f"command timed out after {timeout_seconds:g}s"
+
+    if completed.returncode == 0:
+        return None
+    output = completed.stderr.strip() or completed.stdout.strip()
+    if output:
+        return output
+    return f"command exited with status {completed.returncode}"
+
+
+def container_runtime_skip_reason(
+    *,
+    runtimes: Sequence[str] = CONTAINER_RUNTIMES,
+    which: Callable[[str], str | None] = shutil.which,
+    run: RunCommand = subprocess.run,
+) -> str | None:
+    runtime = first_available_runtime(runtimes=runtimes, which=which)
+    if runtime is None:
+        return format_skip_reason(
+            "container runtime check",
+            "Docker-compatible runtime",
+            f"none found on PATH ({', '.join(runtimes)})",
+        )
+
+    detail = _command_failure_detail([runtime, "info"], run=run)
+    if detail is None:
+        return None
+    return format_skip_reason(
+        "container runtime check",
+        runtime,
+        f"runtime is not usable; check daemon/socket access and permissions: {detail}",
+    )
+
+
+def local_k3s_skip_reason(*, run: RunCommand = subprocess.run) -> str | None:
+    detail = _command_failure_detail(["k3d", "cluster", "list", "-o", "json"], run=run)
+    if detail is None:
+        return None
+    return format_skip_reason(
+        "local k3s cluster check",
+        "k3d",
+        f"cannot list local k3s clusters; check runtime permissions: {detail}",
+    )
+
+
+def network_skip_reasons(
+    *,
+    endpoints: Sequence[tuple[str, str]] = REQUIRED_NETWORK_ENDPOINTS,
+    open_url: OpenUrl = urlopen,
+    timeout: float = 3.0,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    for dependency, endpoint in endpoints:
+        try:
+            with open_url(endpoint, timeout=timeout) as response:
+                status = getattr(response, "status", 0)
+                if status >= 500:
+                    reasons.append(
+                        format_skip_reason(
+                            "network check",
+                            dependency,
+                            f"{endpoint} returned HTTP {status}",
+                        )
+                    )
+        except HTTPError as exc:
+            if exc.code >= 500:
+                reasons.append(
+                    format_skip_reason(
+                        "network check",
+                        dependency,
+                        f"{endpoint} returned HTTP {exc.code}",
+                    )
+                )
+        except (OSError, URLError) as exc:
+            reasons.append(
+                format_skip_reason(
+                    "network check",
+                    dependency,
+                    f"{endpoint} is not reachable: {exc}",
+                )
+            )
+    return tuple(reasons)
+
+
+def collect_e2e_prerequisite_skip_reasons(
+    *,
+    required: Sequence[str] = REQUIRED_E2E_TOOLS,
+    runtimes: Sequence[str] = CONTAINER_RUNTIMES,
+    which: Callable[[str], str | None] = shutil.which,
+    run: RunCommand = subprocess.run,
+    open_url: OpenUrl = urlopen,
+) -> tuple[str, ...]:
+    reasons = list(missing_executable_skip_reasons(required=required, which=which))
+    runtime_reason = container_runtime_skip_reason(
+        runtimes=runtimes,
+        which=which,
+        run=run,
+    )
+    if runtime_reason is not None:
+        reasons.append(runtime_reason)
+    if which("k3d") is not None:
+        k3s_reason = local_k3s_skip_reason(run=run)
+        if k3s_reason is not None:
+            reasons.append(k3s_reason)
+    reasons.extend(network_skip_reasons(open_url=open_url))
+    return tuple(reasons)
+
+
+def format_e2e_skip(reasons: Sequence[str]) -> str:
+    return "E2E prerequisites unavailable:\n- " + "\n- ".join(reasons)
 
 
 def registry_api_url(registry: str = LOCAL_REGISTRY) -> str:
@@ -105,10 +269,25 @@ def ensure_local_registry(
         REGISTRY_CONTAINER_NAME,
         REGISTRY_IMAGE,
     ]
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    subprocess.run(
+        [selected_runtime, "rm", "-f", REGISTRY_CONTAINER_NAME],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    except PermissionError as exc:
+        raise RegistryUnavailable(
+            f"local registry: permission denied starting registry with {selected_runtime}: {exc}"
+        ) from None
+    except FileNotFoundError:
+        raise RegistryUnavailable(
+            f"local registry: container runtime {selected_runtime} was not found"
+        ) from None
     if completed.returncode != 0:
         raise RegistryUnavailable(
-            "failed to start local registry with "
+            "local registry: failed to start registry with "
             f"{selected_runtime}: {completed.stderr.strip() or completed.stdout.strip()}"
         )
 
@@ -129,7 +308,7 @@ def ensure_local_registry(
         capture_output=True,
         check=False,
     )
-    raise RegistryUnavailable(f"local registry at {registry} did not become reachable")
+    raise RegistryUnavailable(f"local registry: {registry} did not become reachable")
 
 
 def stop_local_registry(handle: RegistryHandle) -> None:
@@ -223,6 +402,26 @@ def delete_k3d_cluster(handle: ClusterHandle) -> None:
         return
     subprocess.run(
         ["k3d", "cluster", "delete", handle.name],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def cleanup_helm_release_and_namespace(
+    namespace: str,
+    release: str,
+    *,
+    run: RunCommand = subprocess.run,
+) -> None:
+    run(
+        ["helm", "uninstall", release, "--namespace", namespace, "--ignore-not-found"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    run(
+        ["kubectl", "delete", "namespace", namespace, "--ignore-not-found=true"],
         text=True,
         capture_output=True,
         check=False,
