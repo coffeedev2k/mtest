@@ -13,6 +13,7 @@ from chartpatch.mirror import MirroredImage
 from chartpatch.rewrite import ImageRewriteError
 from chartpatch.runner import CommandResult
 from chartpatch.workflow import (
+    MultiChartSyncReport,
     STAGE_OCI_PUSH,
     STAGE_PACKAGE,
     STAGE_PATCH_APPLY,
@@ -82,6 +83,33 @@ def _normalized_chart(name: str) -> NormalizedChartConfig:
         helm_lint=False,
         helm_template=False,
         registry_url="localhost:5000",
+    )
+
+
+def _multi_chart_config(*names: str):
+    return validate_config(
+        {
+            "registry": {"url": "localhost:5000"},
+            "charts": [
+                {
+                    "name": name,
+                    "source": {
+                        "repo": f"https://example.test/{name}",
+                        "chart": name,
+                        "version": "1.0.0",
+                    },
+                    "patch": {"file": f"patches/{name}.patch"},
+                    "output": {
+                        "chart_ref": f"oci://localhost:5000/helm/{name}",
+                    },
+                    "verification": {
+                        "helm_lint": False,
+                        "helm_template": False,
+                    },
+                }
+                for name in names
+            ],
+        }
     )
 
 
@@ -549,6 +577,161 @@ def test_single_chart_sync_boundary_uses_normalized_chart_fields(tmp_path: Path)
     )
     assert all(call[:2] != ("helm", "lint") for call in runner.calls)
     assert [call[:2] for call in runner.calls].count(("helm", "template")) == 2
+
+
+def test_run_sync_single_chart_config_delegates_to_single_chart_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = validate_config(VALID_CONFIG)
+    runner = object()
+    calls: list[NormalizedChartConfig] = []
+
+    def capture_single_chart_sync(
+        chart: NormalizedChartConfig,
+        *,
+        repo_root: Path | None = None,
+        runner=None,
+    ) -> SyncResult:
+        assert repo_root == tmp_path
+        assert runner is runner_sentinel
+        calls.append(chart)
+        return _minimal_sync_result(chart, tmp_path)
+
+    runner_sentinel = runner
+    monkeypatch.setattr(workflow, "run_single_chart_sync", capture_single_chart_sync)
+
+    result = workflow.run_sync(config, repo_root=tmp_path, runner=runner_sentinel)
+
+    assert isinstance(result, SyncResult)
+    assert [chart.chart_name for chart in calls] == ["kube-prometheus-stack"]
+    assert result.source_chart == "kube-prometheus-stack"
+
+
+def test_run_sync_multi_chart_config_returns_aggregate_report(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _multi_chart_config("alpha", "beta")
+
+    def succeed(
+        chart: NormalizedChartConfig,
+        *,
+        repo_root: Path | None = None,
+        runner=None,
+    ) -> SyncResult:
+        return _minimal_sync_result(chart, tmp_path)
+
+    monkeypatch.setattr(workflow, "run_single_chart_sync", succeed)
+
+    report = workflow.run_sync(config, repo_root=tmp_path)
+
+    assert isinstance(report, MultiChartSyncReport)
+    assert report.succeeded is True
+    assert [entry.chart_name for entry in report.entries] == ["alpha", "beta"]
+    assert all(entry.result is not None for entry in report.entries)
+
+
+def test_run_sync_multi_chart_invokes_single_chart_workflow_in_config_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _multi_chart_config("alpha", "beta", "gamma")
+    calls: list[str] = []
+
+    def capture_order(
+        chart: NormalizedChartConfig,
+        *,
+        repo_root: Path | None = None,
+        runner=None,
+    ) -> SyncResult:
+        calls.append(chart.chart_name)
+        return _minimal_sync_result(chart, tmp_path)
+
+    monkeypatch.setattr(workflow, "run_single_chart_sync", capture_order)
+
+    report = workflow.run_sync(config, repo_root=tmp_path)
+
+    assert isinstance(report, MultiChartSyncReport)
+    assert calls == ["alpha", "beta", "gamma"]
+    assert [entry.chart_name for entry in report.entries] == calls
+
+
+def test_run_sync_multi_chart_continues_after_sync_workflow_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _multi_chart_config("alpha", "beta")
+    calls: list[str] = []
+
+    def fail_first(
+        chart: NormalizedChartConfig,
+        *,
+        repo_root: Path | None = None,
+        runner=None,
+    ) -> SyncResult:
+        calls.append(chart.chart_name)
+        if chart.chart_name == "alpha":
+            raise SyncWorkflowError(
+                "alpha package failed",
+                stage=STAGE_PACKAGE,
+                source_repo=chart.source_repo,
+                source_chart=chart.source_chart,
+                source_version=chart.source_version,
+                workspace_path=tmp_path / "alpha-workspace",
+            )
+        return _minimal_sync_result(chart, tmp_path)
+
+    monkeypatch.setattr(workflow, "run_single_chart_sync", fail_first)
+
+    report = workflow.run_sync(config, repo_root=tmp_path)
+
+    assert isinstance(report, MultiChartSyncReport)
+    assert calls == ["alpha", "beta"]
+    assert report.succeeded is False
+    assert [entry.succeeded for entry in report.entries] == [False, True]
+
+
+def test_run_sync_multi_chart_preserves_failure_stage_and_chart_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _multi_chart_config("alpha", "beta")
+
+    def fail_second(
+        chart: NormalizedChartConfig,
+        *,
+        repo_root: Path | None = None,
+        runner=None,
+    ) -> SyncResult:
+        if chart.chart_name == "beta":
+            raise SyncWorkflowError(
+                "beta push denied",
+                stage=STAGE_OCI_PUSH,
+                source_repo=chart.source_repo,
+                source_chart=chart.source_chart,
+                source_version=chart.source_version,
+                workspace_path=tmp_path / "beta-workspace",
+            )
+        return _minimal_sync_result(chart, tmp_path)
+
+    monkeypatch.setattr(workflow, "run_single_chart_sync", fail_second)
+
+    report = workflow.run_sync(config, repo_root=tmp_path)
+
+    assert isinstance(report, MultiChartSyncReport)
+    failed = report.entries[1]
+    assert failed.chart_name == "beta"
+    assert failed.source_repo == "https://example.test/beta"
+    assert failed.source_chart == "beta"
+    assert failed.source_version == "1.0.0"
+    assert failed.patch_file == "patches/beta.patch"
+    assert failed.registry_url == "localhost:5000"
+    assert failed.output_chart_ref == "oci://localhost:5000/helm/beta"
+    assert failed.error is not None
+    assert failed.error.stage == STAGE_OCI_PUSH
+    assert failed.error.workspace_path == tmp_path / "beta-workspace"
+    assert failed.error.message == "beta push denied"
 
 
 def test_sync_report_renders_image_sections_in_deterministic_order(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ from .workflow import (
     render_chart_sync_report,
     render_sync_failure_report,
     render_sync_report,
-    run_single_chart_sync as run_sync,
+    run_single_chart_sync,
 )
 
 
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
             charts = normalize_chart_entries(config)
             check_required_binaries()
             if not config.is_multi_chart:
-                result = run_sync(charts[0])
+                result = run_single_chart_sync(charts[0])
                 print(render_sync_report(result), end="")
                 return 0
 
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
                 try:
-                    result = run_sync(chart)
+                    result = run_single_chart_sync(chart)
                 except SyncWorkflowError as exc:
                     report = build_failed_chart_sync_report(chart, exc)
                     reports.append(report)

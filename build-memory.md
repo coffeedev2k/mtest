@@ -119,3 +119,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/070/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/071
   - commit: df215fc
+- Task cycle 7: Task: Add CLI Regression Coverage For Multi-Chart Acceptance Fixtures
+  - task_file: /home/atarasov/l/mtest/runs/072/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/073
+  - commit: 9b46aee

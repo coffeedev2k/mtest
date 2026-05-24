@@ -235,11 +235,27 @@ def run_sync(
     *,
     repo_root: Path | None = None,
     runner: CommandRunner | None = None,
-) -> SyncResult:
+) -> SyncResult | MultiChartSyncReport:
+    charts = normalize_chart_entries(config)
     if config.is_multi_chart:
-        raise SyncWorkflowError("multi-chart sync is not implemented yet")
+        reports: list[ChartSyncReport] = []
+        for chart in charts:
+            try:
+                result = run_single_chart_sync(
+                    chart,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
+            except SyncWorkflowError as exc:
+                reports.append(build_failed_chart_sync_report(chart, exc))
+                continue
+
+            reports.append(build_successful_chart_sync_report(chart, result))
+
+        return aggregate_chart_sync_reports(tuple(reports))
+
     return run_single_chart_sync(
-        normalize_chart_entries(config)[0],
+        charts[0],
         repo_root=repo_root,
         runner=runner,
     )

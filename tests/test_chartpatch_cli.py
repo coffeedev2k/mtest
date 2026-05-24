@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from chartpatch import cli
+from chartpatch import workflow
 from chartpatch.config import NormalizedChartConfig
 from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
@@ -260,12 +261,17 @@ def test_plan_does_not_invoke_sync_workflow(monkeypatch, capsys) -> None:
     def fail_if_called(*args, **kwargs):
         raise AssertionError("plan must not run the sync workflow")
 
-    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_if_called)
 
     assert cli.main(["plan", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 0
     captured = capsys.readouterr()
     assert "ChartPatch execution plan" in captured.out
     assert captured.err == ""
+
+
+def test_cli_exposes_single_chart_sync_with_explicit_name() -> None:
+    assert not hasattr(cli, "run_sync")
+    assert cli.run_single_chart_sync is workflow.run_single_chart_sync
 
 
 def test_plan_does_not_check_sync_runtime_dependencies(monkeypatch, capsys) -> None:
@@ -306,7 +312,7 @@ def test_sync_multi_chart_config_dispatches_entries_in_order(
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", capture_run_sync)
+    monkeypatch.setattr(cli, "run_single_chart_sync", capture_run_sync)
 
     result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
 
@@ -358,7 +364,7 @@ charts:
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", capture_run_sync)
+    monkeypatch.setattr(cli, "run_single_chart_sync", capture_run_sync)
 
     result = cli.main(["sync", str(config)])
 
@@ -380,7 +386,7 @@ def test_sync_multi_chart_acceptance_fixture_all_success_reports_every_chart(
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", succeed)
+    monkeypatch.setattr(cli, "run_single_chart_sync", succeed)
 
     result = cli.main(["sync", str(FIXTURES / "multi-chart-acceptance.yaml")])
 
@@ -432,7 +438,7 @@ def test_sync_multi_chart_acceptance_fixture_partial_failure_preserves_success(
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", fail_second)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_second)
 
     result = cli.main(["sync", str(FIXTURES / "multi-chart-acceptance.yaml")])
 
@@ -467,7 +473,7 @@ def test_sync_invalid_multi_chart_acceptance_fixture_fails_before_workflow(
         raise AssertionError("invalid multi-chart config must fail before sync starts")
 
     monkeypatch.setattr(cli, "check_required_binaries", fail_if_called)
-    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_if_called)
 
     result = cli.main(
         [
@@ -499,7 +505,7 @@ def test_sync_multi_chart_continues_when_first_chart_fails(monkeypatch, capsys) 
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", fail_first)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_first)
 
     result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
 
@@ -581,7 +587,7 @@ charts:
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", fail_second)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_second)
 
     result = cli.main(["sync", str(config)])
 
@@ -629,7 +635,7 @@ def test_sync_multi_chart_partial_failure_reports_success_and_failure_stage(
         return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
-    monkeypatch.setattr(cli, "run_sync", fail_second)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_second)
 
     result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
 
@@ -674,7 +680,7 @@ charts:
         raise AssertionError("invalid config must fail before dispatch")
 
     monkeypatch.setattr(cli, "check_required_binaries", fail_if_called)
-    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_if_called)
 
     result = cli.main(["sync", str(config)])
 
@@ -738,7 +744,7 @@ def test_sync_passes_single_normalized_chart_entry_to_workflow(monkeypatch, caps
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
     monkeypatch.setattr(cli, "normalize_chart_entries", capture_normalized_entries)
-    monkeypatch.setattr(cli, "run_sync", capture_run_sync)
+    monkeypatch.setattr(cli, "run_single_chart_sync", capture_run_sync)
 
     result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
 
@@ -757,7 +763,7 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
     monkeypatch.setattr(
         cli,
-        "run_sync",
+        "run_single_chart_sync",
         lambda chart: SyncResult(
             source_repo=chart.source_repo,
             source_chart=chart.source_chart,
@@ -824,7 +830,7 @@ def test_sync_no_discovered_images_exits_nonzero(monkeypatch, capsys) -> None:
             source_version=chart.source_version,
         )
 
-    monkeypatch.setattr(cli, "run_sync", fail_with_no_images)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_with_no_images)
 
     result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
 
@@ -871,7 +877,7 @@ def test_sync_late_stage_failures_exit_nonzero_with_structured_report(
             workspace_path=Path("tmp/chartpatch-sync-failed"),
         )
 
-    monkeypatch.setattr(cli, "run_sync", fail_sync)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_sync)
 
     result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
 
@@ -915,7 +921,7 @@ def test_sync_missing_dependency_fails_before_workflow_execution(monkeypatch, ca
     def fail_with_missing_dependency() -> None:
         raise MissingRuntimeDependencies(("helm",))
 
-    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+    monkeypatch.setattr(cli, "run_single_chart_sync", fail_if_called)
     monkeypatch.setattr(cli, "check_required_binaries", fail_with_missing_dependency)
 
     assert cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")]) == 1
