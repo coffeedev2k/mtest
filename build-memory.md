@@ -135,3 +135,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/078/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/079
   - commit: b61c511
+- Task cycle 11: Task: Final Product-Brief Acceptance Sweep
+  - task_file: /home/atarasov/l/mtest/runs/080/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/081
+  - commit: d80a77e
