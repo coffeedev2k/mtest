@@ -99,3 +99,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/060/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/061
   - commit: db1c946
+- Task cycle 2: Task: Add Ephemeral Container Image Discovery Coverage
+  - task_file: /home/atarasov/l/mtest/runs/062/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/063
+  - commit: ca4d284
