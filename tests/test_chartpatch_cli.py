@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from chartpatch import cli
+from chartpatch.config import NormalizedChartConfig
 from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
 from chartpatch.workflow import (
@@ -302,18 +303,71 @@ def test_sync_valid_fixture_exits_nonzero_when_dependency_is_missing(monkeypatch
     assert "missing required runtime dependency: skopeo" in captured.err
 
 
+def test_sync_passes_single_normalized_chart_entry_to_workflow(monkeypatch, capsys) -> None:
+    normalized = NormalizedChartConfig(
+        chart_name="normalized-release",
+        source_repo="https://normalized.example.test/charts",
+        source_chart="normalized-chart",
+        source_version="1.2.3",
+        patch_file="patches/normalized.patch",
+        output_chart_ref="oci://localhost:5000/helm/normalized-chart",
+        helm_lint=False,
+        helm_template=True,
+        registry_url="localhost:5000",
+    )
+    captured: dict[str, object] = {}
+
+    def capture_normalized_entries(config):
+        captured["loaded_chart_name"] = config.chart.name
+        return (normalized,)
+
+    def capture_run_sync(chart):
+        captured["workflow_chart"] = chart
+        return SyncResult(
+            source_repo=chart.source_repo,
+            source_chart=chart.source_chart,
+            source_version=chart.source_version,
+            patch_file=chart.patch_file,
+            registry_url=chart.registry_url,
+            output_chart_ref=chart.output_chart_ref,
+            workspace_path=Path("tmp/chartpatch-sync-test"),
+            chart_archive_path=Path(
+                "tmp/chartpatch-sync-test/downloaded/chart-1.2.3.tgz"
+            ),
+            unpacked_chart_path=Path("tmp/chartpatch-sync-test/unpacked/chart"),
+            original_render_path=Path("tmp/chartpatch-sync-test/rendered/original.yaml"),
+            discovered_images=(),
+        )
+
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(cli, "normalize_chart_entries", capture_normalized_entries)
+    monkeypatch.setattr(cli, "run_sync", capture_run_sync)
+
+    result = cli.main(["sync", str(FIXTURES / "valid-kube-prometheus-stack.yaml")])
+
+    captured_output = capsys.readouterr()
+    assert result == 0
+    assert captured_output.err == ""
+    assert captured["loaded_chart_name"] == "kube-prometheus-stack"
+    assert captured["workflow_chart"] is normalized
+    assert (
+        "Source chart repo: https://normalized.example.test/charts"
+        in captured_output.out
+    )
+
+
 def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
     monkeypatch.setattr(
         cli,
         "run_sync",
-        lambda config: SyncResult(
-            source_repo=config.chart.source.repo,
-            source_chart=config.chart.source.chart,
-            source_version=config.chart.source.version,
-            patch_file=config.chart.patch.file,
-            registry_url=config.registry.url,
-            output_chart_ref=config.chart.output.chart_ref,
+        lambda chart: SyncResult(
+            source_repo=chart.source_repo,
+            source_chart=chart.source_chart,
+            source_version=chart.source_version,
+            patch_file=chart.patch_file,
+            registry_url=chart.registry_url,
+            output_chart_ref=chart.output_chart_ref,
             workspace_path=Path("tmp/chartpatch-sync-test"),
             chart_archive_path=Path(
                 "tmp/chartpatch-sync-test/downloaded/kube-prometheus-stack-70.0.0.tgz"
@@ -364,13 +418,13 @@ def test_sync_valid_fixture_exits_zero_and_prints_report(monkeypatch, capsys) ->
 def test_sync_no_discovered_images_exits_nonzero(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
 
-    def fail_with_no_images(config) -> SyncResult:
+    def fail_with_no_images(chart) -> SyncResult:
         raise SyncWorkflowError(
             "image discovery failed: rendered manifests contain no discoverable container images",
             stage=STAGE_IMAGE_DISCOVERY,
-            source_repo=config.chart.source.repo,
-            source_chart=config.chart.source.chart,
-            source_version=config.chart.source.version,
+            source_repo=chart.source_repo,
+            source_chart=chart.source_chart,
+            source_version=chart.source_version,
         )
 
     monkeypatch.setattr(cli, "run_sync", fail_with_no_images)
@@ -410,13 +464,13 @@ def test_sync_late_stage_failures_exit_nonzero_with_structured_report(
 ) -> None:
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
 
-    def fail_sync(config) -> SyncResult:
+    def fail_sync(chart) -> SyncResult:
         raise SyncWorkflowError(
             message,
             stage=stage,
-            source_repo=config.chart.source.repo,
-            source_chart=config.chart.source.chart,
-            source_version=config.chart.source.version,
+            source_repo=chart.source_repo,
+            source_chart=chart.source_chart,
+            source_version=chart.source_version,
             workspace_path=Path("tmp/chartpatch-sync-failed"),
         )
 

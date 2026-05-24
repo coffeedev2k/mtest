@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, normalize_chart_entries
 from .dependencies import MissingRuntimeDependencies, check_required_binaries
 from .plan import build_plan
 from .report import render_plan
@@ -13,7 +13,7 @@ from .workflow import (
     SyncWorkflowError,
     render_sync_failure_report,
     render_sync_report,
-    run_sync,
+    run_single_chart_sync as run_sync,
 )
 
 
@@ -48,8 +48,9 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(args.config)
             if config.is_multi_chart:
                 raise ConfigError("multi-chart sync is not implemented yet")
+            chart = normalize_chart_entries(config)[0]
             check_required_binaries()
-            result = run_sync(config)
+            result = run_sync(chart)
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -59,9 +60,9 @@ def main(argv: list[str] | None = None) -> int:
                     SyncWorkflowError(
                         str(exc),
                         stage=STAGE_DEPENDENCY_CHECK,
-                        source_repo=config.chart.source.repo,
-                        source_chart=config.chart.source.chart,
-                        source_version=config.chart.source.version,
+                        source_repo=chart.source_repo,
+                        source_chart=chart.source_chart,
+                        source_version=chart.source_version,
                     )
                 ),
                 end="",

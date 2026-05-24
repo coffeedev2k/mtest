@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chartpatch.config import validate_config
+from chartpatch.config import normalize_chart_entries, validate_config
 from chartpatch.workflow import SYNC_STAGE_NAMES, build_sync_summary, render_sync_summary
 
 
@@ -39,7 +39,7 @@ def test_sync_stage_order_is_defined_in_code() -> None:
 
 
 def test_build_sync_summary_uses_config_fields() -> None:
-    summary = build_sync_summary(validate_config(VALID_CONFIG))
+    summary = build_sync_summary(normalize_chart_entries(validate_config(VALID_CONFIG))[0])
 
     assert summary.source_repo == "https://prometheus-community.github.io/helm-charts"
     assert summary.source_chart == "kube-prometheus-stack"
@@ -51,7 +51,9 @@ def test_build_sync_summary_uses_config_fields() -> None:
 
 
 def test_render_sync_summary_includes_required_fields_and_ordered_stages() -> None:
-    output = render_sync_summary(build_sync_summary(validate_config(VALID_CONFIG)))
+    output = render_sync_summary(
+        build_sync_summary(normalize_chart_entries(validate_config(VALID_CONFIG))[0])
+    )
 
     assert "Source chart repo: https://prometheus-community.github.io/helm-charts" in output
     assert "Source chart name: kube-prometheus-stack" in output

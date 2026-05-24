@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 import tarfile
 import tempfile
 
-from .config import ChartPatchConfig
+from .config import ChartPatchConfig, NormalizedChartConfig, normalize_chart_entries
 from .helm import run_helm_lint, run_helm_package, run_helm_push, run_helm_template
 from .images import (
     ImageTargetMapping,
@@ -64,14 +64,14 @@ class SyncSummary:
     stage_names: tuple[str, ...] = SYNC_STAGE_NAMES
 
 
-def build_sync_summary(config: ChartPatchConfig) -> SyncSummary:
+def build_sync_summary(chart: NormalizedChartConfig) -> SyncSummary:
     return SyncSummary(
-        source_repo=config.chart.source.repo,
-        source_chart=config.chart.source.chart,
-        source_version=config.chart.source.version,
-        patch_file=config.chart.patch.file,
-        registry_url=config.registry.url,
-        output_chart_ref=config.chart.output.chart_ref,
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
+        patch_file=chart.patch_file,
+        registry_url=chart.registry_url,
+        output_chart_ref=chart.output_chart_ref,
     )
 
 
@@ -170,23 +170,35 @@ def run_sync(
 ) -> SyncResult:
     if config.is_multi_chart:
         raise SyncWorkflowError("multi-chart sync is not implemented yet")
+    return run_single_chart_sync(
+        normalize_chart_entries(config)[0],
+        repo_root=repo_root,
+        runner=runner,
+    )
 
+
+def run_single_chart_sync(
+    chart: NormalizedChartConfig,
+    *,
+    repo_root: Path | None = None,
+    runner: CommandRunner | None = None,
+) -> SyncResult:
     command_runner = runner or CommandRunner()
     workflow_repo_root = repo_root or Path.cwd()
     try:
-        workspace = create_sync_workspace(config, repo_root=workflow_repo_root)
+        workspace = create_sync_workspace(chart, repo_root=workflow_repo_root)
     except SyncWorkflowError as exc:
-        raise _sync_error(config, None, STAGE_CHART_PULL, exc.message) from None
+        raise _sync_error(chart, None, STAGE_CHART_PULL, exc.message) from None
 
     pull_result = command_runner.run(
         [
             "helm",
             "pull",
-            config.chart.source.chart,
+            chart.source_chart,
             "--repo",
-            config.chart.source.repo,
+            chart.source_repo,
             "--version",
-            config.chart.source.version,
+            chart.source_version,
             "--destination",
             str(workspace.download_dir),
         ]
@@ -194,7 +206,7 @@ def run_sync(
     _write_command_logs(workspace.logs_dir, "helm-pull", pull_result)
     if pull_result.returncode != 0:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_CHART_PULL,
             _format_command_failure("helm pull failed", pull_result),
@@ -211,13 +223,13 @@ def run_sync(
             workspace.expected_chart_dir,
         )
     except SyncWorkflowError as exc:
-        raise _sync_error(config, workspace, STAGE_CHART_PULL, exc.message) from None
+        raise _sync_error(chart, workspace, STAGE_CHART_PULL, exc.message) from None
 
-    template_result = run_helm_template(command_runner, config.chart.name, unpacked_chart)
+    template_result = run_helm_template(command_runner, chart.chart_name, unpacked_chart)
     _write_command_logs(workspace.logs_dir, "helm-template-original", template_result)
     if template_result.returncode != 0:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_ORIGINAL_RENDER,
             _format_command_failure("helm template failed", template_result),
@@ -228,7 +240,7 @@ def run_sync(
         discovered_images = discover_manifest_images(template_result.stdout)
     except ManifestImageDiscoveryError as exc:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_IMAGE_DISCOVERY,
             f"image discovery failed: {exc}",
@@ -236,11 +248,11 @@ def run_sync(
     try:
         image_target_mappings = map_image_targets(
             discovered_images,
-            config.registry.url,
+            chart.registry_url,
         )
     except ImageTargetMappingError as exc:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_IMAGE_DISCOVERY,
             f"image target mapping failed: {exc}",
@@ -249,7 +261,7 @@ def run_sync(
         verify_image_mapping_complete(discovered_images, image_target_mappings)
     except ImageRewriteVerificationError as exc:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_IMAGE_DISCOVERY,
             f"image target mapping failed: {exc}",
@@ -266,9 +278,9 @@ def run_sync(
             ),
         )
     except ImageMirrorError as exc:
-        raise _sync_error(config, workspace, STAGE_IMAGE_MIRROR, str(exc)) from None
+        raise _sync_error(chart, workspace, STAGE_IMAGE_MIRROR, str(exc)) from None
 
-    patch_file = _resolve_config_path(workflow_repo_root, config.chart.patch.file)
+    patch_file = _resolve_config_path(workflow_repo_root, chart.patch_file)
     try:
         applied_patch = apply_patch_file(
             unpacked_chart,
@@ -281,16 +293,16 @@ def run_sync(
             ),
         )
     except PatchApplicationError as exc:
-        raise _sync_error(config, workspace, STAGE_PATCH_APPLY, str(exc)) from None
+        raise _sync_error(chart, workspace, STAGE_PATCH_APPLY, str(exc)) from None
 
     try:
         rewrite_result = rewrite_chart_images(unpacked_chart, image_target_mappings)
     except ImageRewriteError as exc:
-        raise _sync_error(config, workspace, STAGE_IMAGE_REWRITE, str(exc)) from None
+        raise _sync_error(chart, workspace, STAGE_IMAGE_REWRITE, str(exc)) from None
 
     patched_template_result = run_helm_template(
         command_runner,
-        config.chart.name,
+        chart.chart_name,
         unpacked_chart,
     )
     _write_command_logs(
@@ -300,7 +312,7 @@ def run_sync(
     )
     if patched_template_result.returncode != 0:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_REWRITE_VERIFICATION,
             _format_command_failure(
@@ -317,7 +329,7 @@ def run_sync(
         patched_images = discover_manifest_images(patched_template_result.stdout)
     except ManifestImageDiscoveryError as exc:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_REWRITE_VERIFICATION,
             f"patched render image discovery failed: {exc}",
@@ -327,23 +339,23 @@ def run_sync(
             discovered_images,
             image_target_mappings,
             patched_images,
-            config.registry.url,
+            chart.registry_url,
         )
     except ImageRewriteVerificationError as exc:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_REWRITE_VERIFICATION,
             str(exc),
         ) from None
 
     final_helm_lint_verified = False
-    if config.chart.verification.helm_lint:
+    if chart.helm_lint:
         lint_result = run_helm_lint(command_runner, unpacked_chart)
         _write_command_logs(workspace.logs_dir, "helm-lint-final", lint_result)
         if lint_result.returncode != 0:
             raise _sync_error(
-                config,
+                chart,
                 workspace,
                 STAGE_FINAL_VERIFICATION,
                 _format_command_failure(
@@ -354,10 +366,10 @@ def run_sync(
         final_helm_lint_verified = True
 
     final_helm_template_verified = False
-    if config.chart.verification.helm_template:
+    if chart.helm_template:
         final_template_result = run_helm_template(
             command_runner,
-            config.chart.name,
+            chart.chart_name,
             unpacked_chart,
         )
         _write_command_logs(
@@ -367,7 +379,7 @@ def run_sync(
         )
         if final_template_result.returncode != 0:
             raise _sync_error(
-                config,
+                chart,
                 workspace,
                 STAGE_FINAL_VERIFICATION,
                 _format_command_failure(
@@ -385,7 +397,7 @@ def run_sync(
     _write_command_logs(workspace.logs_dir, "helm-package", package_result)
     if package_result.returncode != 0:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_PACKAGE,
             _format_command_failure("helm package failed", package_result),
@@ -393,32 +405,32 @@ def run_sync(
     try:
         packaged_chart = _find_packaged_chart_archive(workspace.package_output_dir)
     except SyncWorkflowError as exc:
-        raise _sync_error(config, workspace, STAGE_PACKAGE, exc.message) from None
+        raise _sync_error(chart, workspace, STAGE_PACKAGE, exc.message) from None
 
     try:
         push_result = run_helm_push(
             command_runner,
             packaged_chart,
-            config.chart.output.chart_ref,
+            chart.output_chart_ref,
         )
     except ValueError as exc:
-        raise _sync_error(config, workspace, STAGE_OCI_PUSH, str(exc)) from None
+        raise _sync_error(chart, workspace, STAGE_OCI_PUSH, str(exc)) from None
     _write_command_logs(workspace.logs_dir, "helm-push", push_result)
     if push_result.returncode != 0:
         raise _sync_error(
-            config,
+            chart,
             workspace,
             STAGE_OCI_PUSH,
             _format_command_failure("helm push failed", push_result),
         )
 
     return SyncResult(
-        source_repo=config.chart.source.repo,
-        source_chart=config.chart.source.chart,
-        source_version=config.chart.source.version,
-        patch_file=config.chart.patch.file,
-        registry_url=config.registry.url,
-        output_chart_ref=config.chart.output.chart_ref,
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
+        patch_file=chart.patch_file,
+        registry_url=chart.registry_url,
+        output_chart_ref=chart.output_chart_ref,
         workspace_path=workspace.root,
         chart_archive_path=chart_archive,
         unpacked_chart_path=unpacked_chart,
@@ -435,12 +447,12 @@ def run_sync(
         final_helm_lint_verified=final_helm_lint_verified,
         final_helm_template_verified=final_helm_template_verified,
         packaged_chart_path=packaged_chart,
-        pushed_chart_ref=config.chart.output.chart_ref,
+        pushed_chart_ref=chart.output_chart_ref,
     )
 
 
 def create_sync_workspace(
-    config: ChartPatchConfig,
+    chart: NormalizedChartConfig,
     *,
     repo_root: Path,
 ) -> SyncWorkspace:
@@ -457,12 +469,12 @@ def create_sync_workspace(
     for path in (download_dir, unpacked_root, render_dir, package_output_dir, logs_dir):
         path.mkdir(parents=True, exist_ok=True)
 
-    chart_dir_name = _source_chart_dir_name(config.chart.source.chart)
+    chart_dir_name = _source_chart_dir_name(chart.source_chart)
     return SyncWorkspace(
         root=root,
         download_dir=download_dir,
         expected_archive_path=download_dir
-        / f"{chart_dir_name}-{config.chart.source.version}.tgz",
+        / f"{chart_dir_name}-{chart.source_version}.tgz",
         unpacked_root=unpacked_root,
         expected_chart_dir=unpacked_root / chart_dir_name,
         original_render_path=render_dir / "original.yaml",
@@ -575,7 +587,7 @@ def _verification_status(verified: bool) -> str:
 
 
 def _sync_error(
-    config: ChartPatchConfig,
+    chart: NormalizedChartConfig,
     workspace: SyncWorkspace | None,
     stage: str,
     message: str,
@@ -583,9 +595,9 @@ def _sync_error(
     return SyncWorkflowError(
         message,
         stage=stage,
-        source_repo=config.chart.source.repo,
-        source_chart=config.chart.source.chart,
-        source_version=config.chart.source.version,
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
         workspace_path=workspace.root if workspace is not None else None,
     )
 

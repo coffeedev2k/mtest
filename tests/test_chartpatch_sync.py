@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import PurePosixPath
 import tarfile
 
 import pytest
 
 import chartpatch.workflow as workflow
-from chartpatch.config import validate_config
+from chartpatch.config import NormalizedChartConfig, validate_config
 from chartpatch.images import ImageTargetMapping
 from chartpatch.mirror import MirroredImage
 from chartpatch.rewrite import ImageRewriteError
@@ -19,6 +20,7 @@ from chartpatch.workflow import (
     SyncWorkflowError,
     render_sync_failure_report,
     render_sync_report,
+    run_single_chart_sync,
     run_sync,
 )
 
@@ -84,7 +86,7 @@ class StubRunner:
         create_archive: bool = True,
         create_package: bool = True,
         extra_archive: bool = False,
-        archive_chart_dir: str = "kube-prometheus-stack",
+        archive_chart_dir: str | None = None,
     ) -> None:
         self.tmp_path = tmp_path
         self.pull_result = pull_result
@@ -111,12 +113,15 @@ class StubRunner:
         self.calls.append(call)
         self.cwd_by_call.append(cwd)
         if args[:2] == ["helm", "pull"]:
+            pulled_chart = PurePosixPath(args[2]).name
+            pulled_version = args[args.index("--version") + 1]
+            archive_chart_dir = self.archive_chart_dir or pulled_chart
             destination = Path(args[args.index("--destination") + 1])
             if self.create_archive:
                 _write_chart_archive(
-                    destination / "kube-prometheus-stack-70.0.0.tgz",
+                    destination / f"{pulled_chart}-{pulled_version}.tgz",
                     self.tmp_path,
-                    self.archive_chart_dir,
+                    archive_chart_dir,
                 )
             if self.extra_archive:
                 _write_chart_archive(
@@ -152,16 +157,18 @@ class StubRunner:
         if args[:2] == ["helm", "lint"]:
             return self.lint_result or CommandResult(call, 0, "lint ok\n", "")
         if args[:2] == ["helm", "package"]:
+            packaged_chart_name = Path(args[2]).name
+            packaged_chart = f"{packaged_chart_name}-1.0.0.tgz"
             destination = Path(args[args.index("--destination") + 1])
             if self.create_package:
-                (destination / "kube-prometheus-stack-1.0.0.tgz").write_text(
+                (destination / packaged_chart).write_text(
                     "packaged chart\n",
                     encoding="utf-8",
                 )
             return self.package_result or CommandResult(
                 call,
                 0,
-                f"saved to: {destination / 'kube-prometheus-stack-1.0.0.tgz'}\n",
+                f"saved to: {destination / packaged_chart}\n",
                 "",
             )
         if args[:2] == ["helm", "push"]:
@@ -443,6 +450,70 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert report.index("Packaged chart:") < report.index(
         "Pushed OCI chart reference:"
     )
+
+
+def test_single_chart_sync_boundary_uses_normalized_chart_fields(tmp_path: Path) -> None:
+    chart = NormalizedChartConfig(
+        chart_name="custom-release",
+        source_repo="https://charts.example.test/repo",
+        source_chart="vendor/custom-chart",
+        source_version="9.8.7",
+        patch_file="patches/custom.patch",
+        output_chart_ref="oci://localhost:5000/helm/custom-chart",
+        helm_lint=False,
+        helm_template=False,
+        registry_url="localhost:5000",
+    )
+    runner = StubRunner(tmp_path)
+
+    result = run_single_chart_sync(chart, repo_root=tmp_path, runner=runner)
+
+    assert result.source_repo == "https://charts.example.test/repo"
+    assert result.source_chart == "vendor/custom-chart"
+    assert result.source_version == "9.8.7"
+    assert result.patch_file == "patches/custom.patch"
+    assert result.registry_url == "localhost:5000"
+    assert result.output_chart_ref == "oci://localhost:5000/helm/custom-chart"
+    assert result.chart_archive_path == (
+        result.workspace_path / "downloaded" / "custom-chart-9.8.7.tgz"
+    )
+    assert result.unpacked_chart_path == (
+        result.workspace_path / "unpacked" / "custom-chart"
+    )
+    assert result.applied_patch_file == tmp_path / "patches/custom.patch"
+    assert result.final_helm_lint_verified is False
+    assert result.final_helm_template_verified is False
+    assert runner.calls[0] == (
+        "helm",
+        "pull",
+        "vendor/custom-chart",
+        "--repo",
+        "https://charts.example.test/repo",
+        "--version",
+        "9.8.7",
+        "--destination",
+        str(result.workspace_path / "downloaded"),
+    )
+    assert runner.calls[1] == (
+        "helm",
+        "template",
+        "custom-release",
+        str(result.unpacked_chart_path),
+    )
+    assert (
+        "git",
+        "am",
+        "--reject",
+        str(tmp_path / "patches/custom.patch"),
+    ) in runner.calls
+    assert runner.calls[-1] == (
+        "helm",
+        "push",
+        str(result.packaged_chart_path),
+        "oci://localhost:5000/helm/custom-chart",
+    )
+    assert all(call[:2] != ("helm", "lint") for call in runner.calls)
+    assert [call[:2] for call in runner.calls].count(("helm", "template")) == 2
 
 
 def test_sync_report_renders_image_sections_in_deterministic_order(tmp_path: Path) -> None:
