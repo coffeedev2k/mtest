@@ -63,3 +63,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/040/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/041
   - commit: 9d38b47
+- Task cycle 2: Task: Add Pinned Kyverno E2E Fixtures
+  - task_file: /home/atarasov/l/mtest/runs/042/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/043
+  - commit: d0c4f29
