@@ -131,3 +131,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/076/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/077
   - commit: 1d15acc
+- Task cycle 10: Task: Run Opt-In Kyverno E2E Acceptance After Multi-Chart Hardening
+  - task_file: /home/atarasov/l/mtest/runs/078/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/079
+  - commit: b61c511
