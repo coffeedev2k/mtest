@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from chartpatch.config import ConfigError, load_config, validate_config
+from chartpatch.config import (
+    ConfigError,
+    load_config,
+    normalize_chart_entries,
+    validate_config,
+)
 
 
 VALID_CONFIG = {
@@ -91,6 +96,37 @@ def test_top_level_charts_config_is_marked_plan_only_even_with_one_entry() -> No
     assert len(config.charts) == 1
 
 
+def test_legacy_single_chart_normalization_includes_flat_chart_entry() -> None:
+    entries = normalize_chart_entries(validate_config(VALID_CONFIG))
+
+    assert len(entries) == 1
+    assert entries[0].chart_name == "kube-prometheus-stack"
+    assert entries[0].source_repo == "https://prometheus-community.github.io/helm-charts"
+    assert entries[0].source_chart == "kube-prometheus-stack"
+    assert entries[0].source_version == "70.0.0"
+    assert entries[0].patch_file == "patches/kube-prometheus-stack.patch"
+    assert entries[0].output_chart_ref == "oci://localhost:5000/helm/kube-prometheus-stack"
+    assert entries[0].helm_lint is True
+    assert entries[0].helm_template is True
+    assert entries[0].registry_url == "localhost:5000"
+
+
+def test_multi_chart_normalization_preserves_order_and_inherits_registry() -> None:
+    entries = normalize_chart_entries(validate_config(MULTI_CHART_CONFIG))
+
+    assert tuple(entry.chart_name for entry in entries) == (
+        "kube-prometheus-stack",
+        "kyverno",
+    )
+    assert entries[0].registry_url == "localhost:5000"
+    assert entries[1].registry_url == "localhost:5000"
+    assert entries[1].source_repo == "https://kyverno.github.io/kyverno"
+    assert entries[1].patch_file == "patches/kyverno.patch"
+    assert entries[1].output_chart_ref == "oci://localhost:5000/helm/kyverno"
+    assert entries[1].helm_lint is False
+    assert entries[1].helm_template is True
+
+
 def test_missing_file_returns_clean_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="config file not found"):
         load_config(tmp_path / "missing.yaml")
@@ -171,6 +207,39 @@ def test_multi_chart_item_missing_required_field_reports_index() -> None:
     with pytest.raises(
         ConfigError,
         match=r"charts\[1\]\.source\.version is required",
+    ):
+        validate_config(raw)
+
+
+def test_multi_chart_item_missing_required_field_reports_chart_name() -> None:
+    raw = _copy(MULTI_CHART_CONFIG)
+    del raw["charts"][1]["patch"]
+
+    with pytest.raises(
+        ConfigError,
+        match=r"charts\[1\] \(kyverno\): charts\[1\]\.patch is required",
+    ):
+        validate_config(raw)
+
+
+def test_multi_chart_item_without_name_reports_index() -> None:
+    raw = _copy(MULTI_CHART_CONFIG)
+    del raw["charts"][1]["name"]
+
+    with pytest.raises(
+        ConfigError,
+        match=r"charts\[1\]: charts\[1\]\.name is required",
+    ):
+        validate_config(raw)
+
+
+def test_duplicate_multi_chart_names_fail_validation() -> None:
+    raw = _copy(MULTI_CHART_CONFIG)
+    raw["charts"][1]["name"] = "kube-prometheus-stack"
+
+    with pytest.raises(
+        ConfigError,
+        match=r"duplicate chart name 'kube-prometheus-stack' in charts\[1\]",
     ):
         validate_config(raw)
 

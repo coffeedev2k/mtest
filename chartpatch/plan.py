@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import ChartPatchConfig
+from .config import ChartPatchConfig, normalize_chart_entries
 
 
 @dataclass(frozen=True)
@@ -63,17 +63,17 @@ def build_plan(config: ChartPatchConfig) -> Plan:
     return Plan(
         entries=tuple(
             ChartPlanEntry(
-                chart_name=chart.name,
-                source_repo=chart.source.repo,
-                source_chart=chart.source.chart,
-                source_version=chart.source.version,
-                patch_file=chart.patch.file,
-                registry_url=config.registry.url,
-                output_chart_ref=chart.output.chart_ref,
-                helm_lint=chart.verification.helm_lint,
-                helm_template=chart.verification.helm_template,
+                chart_name=chart.chart_name,
+                source_repo=chart.source_repo,
+                source_chart=chart.source_chart,
+                source_version=chart.source_version,
+                patch_file=chart.patch_file,
+                registry_url=chart.registry_url,
+                output_chart_ref=chart.output_chart_ref,
+                helm_lint=chart.helm_lint,
+                helm_template=chart.helm_template,
             )
-            for chart in config.charts
+            for chart in normalize_chart_entries(config)
         )
     )
 

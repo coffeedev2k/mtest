@@ -49,6 +49,19 @@ class RegistryConfig:
 
 
 @dataclass(frozen=True)
+class NormalizedChartConfig:
+    chart_name: str
+    source_repo: str
+    source_chart: str
+    source_version: str
+    patch_file: str
+    output_chart_ref: str
+    helm_lint: bool
+    helm_template: bool
+    registry_url: str
+
+
+@dataclass(frozen=True)
 class ChartPatchConfig:
     registry: RegistryConfig
     charts: tuple[ChartConfig, ...]
@@ -96,7 +109,8 @@ def validate_config(raw: Any) -> ChartPatchConfig:
         raise ConfigError("one of chart or charts is required")
 
     if has_chart:
-        charts = (_validate_chart_config(_required_mapping(raw, "chart"), "chart"),)
+        chart = _required_mapping(raw, "chart")
+        charts = (_validate_single_chart_config(chart),)
     else:
         charts_value = raw["charts"]
         if not isinstance(charts_value, list):
@@ -107,6 +121,7 @@ def validate_config(raw: Any) -> ChartPatchConfig:
             _validate_chart_entry(item, index)
             for index, item in enumerate(charts_value)
         )
+        _reject_duplicate_chart_names(charts)
 
     return ChartPatchConfig(
         registry=RegistryConfig(url=registry_url),
@@ -115,11 +130,38 @@ def validate_config(raw: Any) -> ChartPatchConfig:
     )
 
 
+def normalize_chart_entries(config: ChartPatchConfig) -> tuple[NormalizedChartConfig, ...]:
+    return tuple(
+        NormalizedChartConfig(
+            chart_name=chart.name,
+            source_repo=chart.source.repo,
+            source_chart=chart.source.chart,
+            source_version=chart.source.version,
+            patch_file=chart.patch.file,
+            output_chart_ref=chart.output.chart_ref,
+            helm_lint=chart.verification.helm_lint,
+            helm_template=chart.verification.helm_template,
+            registry_url=config.registry.url,
+        )
+        for chart in config.charts
+    )
+
+
 def _validate_chart_entry(raw: Any, index: int) -> ChartConfig:
     path = f"charts[{index}]"
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} must be a mapping")
-    return _validate_chart_config(raw, path)
+    try:
+        return _validate_chart_config(raw, path)
+    except ConfigError as exc:
+        raise ConfigError(f"{_chart_context(raw, index)}: {exc}") from None
+
+
+def _validate_single_chart_config(raw: dict[str, Any]) -> ChartConfig:
+    try:
+        return _validate_chart_config(raw, "chart")
+    except ConfigError as exc:
+        raise ConfigError(f"{_single_chart_context(raw)}: {exc}") from None
 
 
 def _validate_chart_config(chart: dict[str, Any], path: str) -> ChartConfig:
@@ -180,3 +222,28 @@ def _required_bool(data: dict[str, Any], key: str, path: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{path} must be a boolean")
     return value
+
+
+def _chart_context(raw: dict[str, Any], index: int) -> str:
+    name = raw.get("name")
+    if isinstance(name, str) and name.strip():
+        return f"charts[{index}] ({name.strip()})"
+    return f"charts[{index}]"
+
+
+def _single_chart_context(raw: dict[str, Any]) -> str:
+    name = raw.get("name")
+    if isinstance(name, str) and name.strip():
+        return f"chart ({name.strip()})"
+    return "chart"
+
+
+def _reject_duplicate_chart_names(charts: tuple[ChartConfig, ...]) -> None:
+    seen: dict[str, int] = {}
+    for index, chart in enumerate(charts):
+        if chart.name in seen:
+            raise ConfigError(
+                f"duplicate chart name {chart.name!r} in charts[{index}]; "
+                f"first defined in charts[{seen[chart.name]}]"
+            )
+        seen[chart.name] = index

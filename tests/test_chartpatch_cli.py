@@ -97,6 +97,56 @@ def test_plan_invalid_fixture_exits_nonzero_and_emits_useful_stderr() -> None:
     assert "chart.source.version is required" in completed.stderr
 
 
+def test_plan_invalid_multi_chart_config_exits_nonzero_and_identifies_chart(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "invalid-multi-chart.yaml"
+    config.write_text(
+        """
+registry:
+  url: localhost:5000
+
+charts:
+  - name: kube-prometheus-stack
+    source:
+      repo: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      version: 70.0.0
+    patch:
+      file: patches/kube-prometheus-stack.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kube-prometheus-stack
+    verification:
+      helm_lint: true
+      helm_template: true
+  - name: kyverno
+    source:
+      repo: https://kyverno.github.io/kyverno
+      chart: kyverno
+    patch:
+      file: patches/kyverno.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kyverno
+    verification:
+      helm_lint: false
+      helm_template: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "chartpatch", "plan", str(config)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert "charts[1] (kyverno)" in completed.stderr
+    assert "charts[1].source.version is required" in completed.stderr
+
+
 def test_plan_missing_config_file_exits_nonzero() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "chartpatch", "plan", str(FIXTURES / "missing.yaml")],
