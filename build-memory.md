@@ -127,3 +127,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/074/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/075
   - commit: 0b2f915
+- Task cycle 9: Task: Run Fast Release-Readiness Tests And Fix Blocking Regressions
+  - task_file: /home/atarasov/l/mtest/runs/076/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/077
+  - commit: 1d15acc
