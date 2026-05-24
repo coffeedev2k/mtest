@@ -413,6 +413,30 @@ def test_valid_multi_chart_fixture_parses() -> None:
     )
 
 
+def test_multi_chart_acceptance_fixture_parses() -> None:
+    config = load_config(Path("tests/fixtures/chartpatch/multi-chart-acceptance.yaml"))
+
+    assert tuple(chart.name for chart in config.charts) == ("alpha", "beta")
+    assert tuple(chart.source.version for chart in config.charts) == ("1.0.0", "2.0.0")
+    assert tuple(chart.output.chart_ref for chart in config.charts) == (
+        "oci://localhost:5000/helm/alpha",
+        "oci://localhost:5000/helm/beta",
+    )
+
+
+def test_invalid_multi_chart_acceptance_fixture_fails_validation() -> None:
+    with pytest.raises(
+        ConfigError,
+        match=r"charts\[1\] \(beta\): charts\[1\]\.source\.version is required",
+    ):
+        load_config(
+            Path(
+                "tests/fixtures/chartpatch/"
+                "invalid-multi-chart-missing-source-version.yaml"
+            )
+        )
+
+
 def _without_field(raw: dict[str, object], field: str) -> dict[str, object]:
     copied = _copy(raw)
     parent = copied

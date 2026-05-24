@@ -1,0 +1,27 @@
+registry:
+  url: localhost:5000
+
+charts:
+  - name: alpha
+    source:
+      repo: https://example.test/charts
+      chart: alpha
+      version: 1.0.0
+    patch:
+      file: patches/alpha.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/alpha
+    verification:
+      helm_lint: false
+      helm_template: false
+  - name: beta
+    source:
+      repo: https://example.test/charts
+      chart: beta
+    patch:
+      file: patches/beta.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/beta
+    verification:
+      helm_lint: false
+      helm_template: false
