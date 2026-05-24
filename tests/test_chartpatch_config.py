@@ -424,6 +424,30 @@ def test_multi_chart_acceptance_fixture_parses() -> None:
     )
 
 
+def test_multi_chart_acceptance_fixture_normalizes_ordered_chart_entries() -> None:
+    config = load_config(Path("tests/fixtures/chartpatch/multi-chart-acceptance.yaml"))
+
+    entries = normalize_chart_entries(config)
+
+    assert [entry.chart_name for entry in entries] == ["alpha", "beta"]
+    assert entries[0].source_repo == "https://example.test/charts"
+    assert entries[0].source_chart == "alpha"
+    assert entries[0].source_version == "1.0.0"
+    assert entries[0].patch_file == "patches/alpha.patch"
+    assert entries[0].registry_url == "localhost:5000"
+    assert entries[0].output_chart_ref == "oci://localhost:5000/helm/alpha"
+    assert entries[0].helm_lint is False
+    assert entries[0].helm_template is False
+    assert entries[1].source_repo == "https://example.test/charts"
+    assert entries[1].source_chart == "beta"
+    assert entries[1].source_version == "2.0.0"
+    assert entries[1].patch_file == "patches/beta.patch"
+    assert entries[1].registry_url == "localhost:5000"
+    assert entries[1].output_chart_ref == "oci://localhost:5000/helm/beta"
+    assert entries[1].helm_lint is False
+    assert entries[1].helm_template is False
+
+
 def test_invalid_multi_chart_acceptance_fixture_fails_validation() -> None:
     with pytest.raises(
         ConfigError,

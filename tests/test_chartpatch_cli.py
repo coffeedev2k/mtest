@@ -27,6 +27,7 @@ FIXTURES = Path("tests/fixtures/chartpatch")
 
 def _sync_result_for(chart: NormalizedChartConfig) -> SyncResult:
     safe_name = chart.chart_name.replace("/", "-")
+    workspace = Path(f"tmp/chartpatch-sync-{safe_name}")
     return SyncResult(
         source_repo=chart.source_repo,
         source_chart=chart.source_chart,
@@ -34,17 +35,13 @@ def _sync_result_for(chart: NormalizedChartConfig) -> SyncResult:
         patch_file=chart.patch_file,
         registry_url=chart.registry_url,
         output_chart_ref=chart.output_chart_ref,
-        workspace_path=Path(f"tmp/chartpatch-sync-{safe_name}"),
-        chart_archive_path=Path(
-            f"tmp/chartpatch-sync-{safe_name}/downloaded/{safe_name}.tgz"
-        ),
-        unpacked_chart_path=Path(
-            f"tmp/chartpatch-sync-{safe_name}/unpacked/{safe_name}"
-        ),
-        original_render_path=Path(
-            f"tmp/chartpatch-sync-{safe_name}/rendered/original.yaml"
-        ),
+        workspace_path=workspace,
+        chart_archive_path=workspace / "downloaded" / f"{safe_name}.tgz",
+        unpacked_chart_path=workspace / "unpacked" / safe_name,
+        original_render_path=workspace / "rendered" / "original.yaml",
         discovered_images=(),
+        packaged_chart_path=workspace / "packages" / f"{safe_name}.tgz",
+        pushed_chart_ref=chart.output_chart_ref,
     )
 
 
@@ -102,6 +99,50 @@ def test_plan_valid_multi_chart_fixture_exits_zero_and_labels_entries() -> None:
     assert "  Local registry URL: localhost:5000" in completed.stdout
     assert "  Output OCI chart reference: oci://localhost:5000/helm/kyverno" in (
         completed.stdout
+    )
+
+
+def test_plan_multi_chart_acceptance_fixture_prints_deterministic_entries() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "chartpatch",
+            "plan",
+            str(FIXTURES / "multi-chart-acceptance.yaml"),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.stderr == ""
+    assert completed.stdout == (
+        "ChartPatch execution plan\n"
+        "Configured charts: 2\n"
+        "Chart 1: alpha\n"
+        "  Configured chart name: alpha\n"
+        "  Source chart repo: https://example.test/charts\n"
+        "  Source chart name: alpha\n"
+        "  Source chart version: 1.0.0\n"
+        "  Configured patch file: patches/alpha.patch\n"
+        "  Local registry URL: localhost:5000\n"
+        "  Output OCI chart reference: oci://localhost:5000/helm/alpha\n"
+        "  Verification steps:\n"
+        "    helm_lint: disabled\n"
+        "    helm_template: disabled\n"
+        "Chart 2: beta\n"
+        "  Configured chart name: beta\n"
+        "  Source chart repo: https://example.test/charts\n"
+        "  Source chart name: beta\n"
+        "  Source chart version: 2.0.0\n"
+        "  Configured patch file: patches/beta.patch\n"
+        "  Local registry URL: localhost:5000\n"
+        "  Output OCI chart reference: oci://localhost:5000/helm/beta\n"
+        "  Verification steps:\n"
+        "    helm_lint: disabled\n"
+        "    helm_template: disabled\n"
+        "No remote mutation: plan only reads the config and prints this plan.\n"
     )
 
 
@@ -351,11 +392,25 @@ def test_sync_multi_chart_acceptance_fixture_all_success_reports_every_chart(
     assert "Processing chart 2/2: beta" in captured.out
     assert "Configured chart name: alpha" in captured.out
     assert "Configured chart name: beta" in captured.out
+    assert "Sync status: success" in captured.out
+    assert "Source chart repo: https://example.test/charts" in captured.out
+    assert "Source chart name: alpha" in captured.out
+    assert "Source chart name: beta" in captured.out
     assert "Source chart version: 1.0.0" in captured.out
     assert "Source chart version: 2.0.0" in captured.out
+    assert "Configured patch file: patches/alpha.patch" in captured.out
+    assert "Configured patch file: patches/beta.patch" in captured.out
+    assert "Local registry URL: localhost:5000" in captured.out
     assert "Output OCI chart reference: oci://localhost:5000/helm/alpha" in captured.out
     assert "Output OCI chart reference: oci://localhost:5000/helm/beta" in captured.out
+    assert "Discovered images: 0" in captured.out
+    assert "Pushed OCI chart reference: oci://localhost:5000/helm/alpha" in captured.out
+    assert "Pushed OCI chart reference: oci://localhost:5000/helm/beta" in captured.out
     assert captured.out.count("Sync status: success") == 2
+    assert captured.out.count("Discovered images: 0") == 2
+    assert captured.out.index("Configured chart name: alpha") < captured.out.index(
+        "Configured chart name: beta"
+    )
 
 
 def test_sync_multi_chart_acceptance_fixture_partial_failure_preserves_success(
@@ -385,12 +440,22 @@ def test_sync_multi_chart_acceptance_fixture_partial_failure_preserves_success(
     assert result == 1
     assert calls == ["alpha", "beta"]
     assert "Processing chart 1/2: alpha" in captured.out
+    assert "Processing chart 2/2: beta" in captured.out
     assert "Configured chart name: alpha" in captured.out
     assert "Sync status: success" in captured.out
+    assert "Source chart name: alpha" in captured.out
+    assert "Output OCI chart reference: oci://localhost:5000/helm/alpha" in captured.out
+    assert "Pushed OCI chart reference: oci://localhost:5000/helm/alpha" in captured.out
     assert "ChartPatch sync failed" in captured.err
     assert "Configured chart name: beta" in captured.err
     assert "Sync status: failure" in captured.err
     assert "Failed stage: package" in captured.err
+    assert "Source chart repo: https://example.test/charts" in captured.err
+    assert "Source chart name: beta" in captured.err
+    assert "Source chart version: 2.0.0" in captured.err
+    assert "Configured patch file: patches/beta.patch" in captured.err
+    assert "Local registry URL: localhost:5000" in captured.err
+    assert "Output OCI chart reference: oci://localhost:5000/helm/beta" in captured.err
     assert "helm package failed: beta package denied" in captured.err
 
 
