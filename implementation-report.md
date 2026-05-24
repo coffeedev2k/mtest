@@ -4,64 +4,75 @@
 
 - `implementation-report.md`
 
-No application code, tests, `agent_factory/**`, or `runs/**` files were modified.
+No application code, tests, fixtures, `agent_factory/**`, or `runs/**` files were modified. Existing dirty worktree state in `build-memory.md` was left untouched.
 
 ## Behavior implemented
 
-This was an audit-only task. I inspected the current `chartpatch` implementation against the product brief, plan, architecture, and build memory, and verified the completed MVP capabilities listed in the task. No workflow stages were reimplemented.
+This was the requested audit-only first product increment. I inspected current multi-chart `plan` and `sync` behavior against the accepted architecture and recorded the smallest remaining hardening work. No runtime behavior was changed.
 
-## Capability checklist
+## Audit matrix
 
-| Capability | Implementation status | Key files/modules | Test coverage status | Missing coverage or risk | Smallest recommended follow-up |
+| Area | Status | Observed behavior | Expected behavior | Reference | Recommended follow-up |
 | --- | --- | --- | --- | --- | --- |
-| `chartpatch plan config.yaml` | Present. CLI loads YAML, validates required fields, builds and renders a side-effect-free plan. | `chartpatch/cli.py`, `chartpatch/config.py`, `chartpatch/plan.py`, `chartpatch/report.py` | Covered by `tests/test_chartpatch_plan.py`, `tests/test_chartpatch_config.py`, and CLI subprocess tests in `tests/test_chartpatch_cli.py`. | Coverage is focused and adequate for the first microfeature. | None for MVP. |
-| `chartpatch sync` command skeleton and dependency checks | Present. `sync` loads config, checks `helm`, `git`, and `skopeo`, then dispatches to `run_sync`; missing dependencies report the dependency-check stage. | `chartpatch/cli.py`, `chartpatch/dependencies.py`, `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_cli.py` and `tests/test_chartpatch_dependencies.py`. | Dependency checks do not verify minimum versions or Helm OCI capability. | Add a narrow dependency/version capability check only if product requirements require pinned tool behavior. |
-| Sync workspace creation | Present. Workspaces are created under `<repo>/tmp/chartpatch-sync-*` with download, unpack, render, package, and logs directories. | `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_sync.py::test_sync_creates_workspace_pulls_unpacks_renders_and_reports`. | The test uses a fake runner and temporary archive, not a real Helm pull. | Keep as-is until e2e infrastructure exists. |
-| Chart pull and unpack | Present. Uses `helm pull`, expects one `.tgz`, unpacks it, and validates the expected chart directory. | `chartpatch/workflow.py` | Covered by happy-path and failure tests for missing, ambiguous, invalid, and wrong-name archives in `tests/test_chartpatch_sync.py`. | No real Helm chart pull regression outside fake-runner tests. | Add gated e2e later; no unit change needed now. |
-| Original `helm template` render | Present. Runs `helm template` immediately after unpack and writes `rendered/original.yaml`. | `chartpatch/workflow.py`, `chartpatch/helm.py` | Covered by command-order and render-output assertions in `tests/test_chartpatch_sync.py`; command construction covered in `tests/test_chartpatch_helm.py`. | Fake-runner coverage verifies ordering but not real chart rendering. | Include original-render-before-patch assertion in a future fixture-based regression or e2e test. |
-| Rendered-manifest image discovery | Present. Parses rendered YAML and recursively discovers `containers` and `initContainers` image fields. | `chartpatch/images.py`, `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_images.py` and workflow no-image failure coverage in `tests/test_chartpatch_sync.py`. | Discovery is broad recursive YAML scanning; it may pick up non-Pod-shaped fields named `containers` in unusual CRDs. | Add one regression for CRD-like non-pod data if this becomes a known chart issue. |
-| Deterministic local image target mapping | Present. Deduplicates and sorts sources, then maps to `<registry>/<source>`. | `chartpatch/images.py`, `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_images.py` and sync result assertions in `tests/test_chartpatch_sync.py`. | Registry-less Docker Hub images are not normalized to `docker.io/library/...`; the current test suite explicitly preserves `nginx:latest` as-is. This may or may not match the product wording around normalized references. | Clarify expected normalization for bare images; if needed, add a focused mapping task before changing behavior. |
-| Image mirroring with `skopeo` | Present. Runs `skopeo copy docker://<source> docker://<target>` for each original mapping and stops on first failure. | `chartpatch/mirror.py`, `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_mirror.py` and workflow call-order/failure tests in `tests/test_chartpatch_sync.py`. | Coverage uses fake command results; no registry-backed copy test exists. | Add gated registry e2e later. |
-| Git repository initialization and patch application with failure handling | Present. Runs `git init`, config, add, baseline commit, then `git am --reject`; fails on non-zero `git am`, remaining `.rej`, or `.git/rebase-apply`. | `chartpatch/patch.py`, `chartpatch/workflow.py` | Module coverage in `tests/test_chartpatch_patch.py`; workflow coverage for `git am` failure in `tests/test_chartpatch_sync.py`. | Workflow-level coverage does not currently exercise `.rej` or unfinished `rebase-apply` detection through `run_sync` and failure-stage reporting. | Add a small workflow regression that simulates `.rej` and `.git/rebase-apply` after `git am` and asserts `stage == "patch apply"`. |
-| Patched chart image rewrite | Present. Rewrites exact upstream image strings in chart YAML/template text files, skipping `.git`, unsupported files, symlinks, and binary data. | `chartpatch/rewrite.py`, `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_rewrite.py` and workflow mapping/rewrite tests in `tests/test_chartpatch_sync.py`. | Exact string replacement can miss charts that split registry/repository/tag across values; verification should catch misses, but rewrite coverage does not model split fields. | Add a fixture-chart regression for a split image value format if the MVP target chart uses that pattern. |
-| Post-rewrite render verification | Present. Renders patched chart, discovers final images, requires expected local targets, rejects leaked upstream images and non-local images. | `chartpatch/rewrite.py`, `chartpatch/workflow.py` | Covered by `tests/test_chartpatch_rewrite.py` and workflow patched-render failure tests in `tests/test_chartpatch_sync.py`. | Workflow test covers leaked/missing local targets; module tests cover extra non-local images. | Add a workflow-level non-local extra image case if failure-stage regressions are expanded. |
-| Configurable final `helm lint` and `helm template` | Present. Final lint/template run only when configured; failures stop before package/push. | `chartpatch/workflow.py`, `chartpatch/helm.py`, `chartpatch/config.py` | Covered by `tests/test_chartpatch_sync.py`, `tests/test_chartpatch_helm.py`, and config validation tests. | Adequate unit coverage; no real Helm lint/template coverage. | No immediate follow-up until e2e. |
-| Patched chart packaging | Present. Runs `helm package` into workspace package directory and requires exactly one packaged archive. | `chartpatch/workflow.py`, `chartpatch/helm.py` | Command construction and workflow success/failure covered in `tests/test_chartpatch_helm.py` and `tests/test_chartpatch_sync.py`. | Failure report rendering is not exercised through CLI for package-stage errors. | Add a narrow failure-stage report test for package failure through CLI or `render_sync_failure_report`. |
-| OCI chart push | Present. Validates `chart.output.chart_ref` starts with `oci://`, then runs `helm push <package> <chart_ref>`. | `chartpatch/workflow.py`, `chartpatch/helm.py` | Command, non-OCI validation, success, and push failure covered by `tests/test_chartpatch_helm.py` and `tests/test_chartpatch_sync.py`. | Failure report rendering is not exercised through CLI for OCI push-stage errors. | Add a narrow failure-stage report test for OCI push failure through CLI or `render_sync_failure_report`. |
-| Final run report | Present. Success report includes source/chart metadata, workspace paths, discovered images, mappings, mirroring, patch, rewrites, verification, package, push, and overall status. | `chartpatch/workflow.py`, `chartpatch/cli.py` | Covered by `tests/test_chartpatch_sync.py` and CLI report tests in `tests/test_chartpatch_cli.py`. | Report ordering is asserted for the happy path, but not with all optional verification combinations plus package/push details together. | No immediate follow-up; include in broader fixture regression later. |
-| Failure-stage reporting | Present. `SyncWorkflowError` carries stage and context; CLI renders structured failure reports. | `chartpatch/workflow.py`, `chartpatch/cli.py` | Covered for dependency check, image discovery, generic package report rendering, and many workflow exceptions in `tests/test_chartpatch_cli.py` and `tests/test_chartpatch_sync.py`. | Not every late-stage failure is asserted through the rendered failure report, especially package and OCI push. | Highest-priority next task: add focused regression tests for patch reject leftovers plus rendered failure reports for package and OCI push failures. |
+| Config normalization | pass | Legacy `chart:` and multi-chart `charts:` are both accepted and normalized through `normalize_chart_entries`; config cannot specify both shapes. | Preserve legacy single-chart support and normalize both shapes into a chart list. | `chartpatch/config.py:104`, `chartpatch/config.py:133`; `tests/test_chartpatch_config.py:71`, `tests/test_chartpatch_config.py:78`, `tests/test_chartpatch_config.py:99`, `tests/test_chartpatch_config.py:114` | None. |
+| Plan output | pass | Single-chart plan preserves legacy output; multi-chart plan prints ordered labeled sections with source, version, patch, registry, output ref, and verification flags. | Stable deterministic per-chart plan output for both config shapes. | `chartpatch/report.py:6`; `tests/test_chartpatch_plan.py:40`, `tests/test_chartpatch_plan.py:66`, `tests/test_chartpatch_plan.py:95`; `tests/test_chartpatch_cli.py:79` | None. |
+| Sync dispatch | pass | CLI normalizes config, checks dependencies once, and calls the extracted single-chart workflow once per chart in order. Tests cover success dispatch and fail-fast on first and later chart failures. | Sequential MVP multi-chart execution using the single-chart workflow boundary. | `chartpatch/cli.py:48`; `tests/test_chartpatch_cli.py:254`, `tests/test_chartpatch_cli.py:328`, `tests/test_chartpatch_cli.py:355` | None. |
+| Validation behavior | pass | Empty `charts`, duplicate chart names, missing shapes, and per-chart required fields are rejected with indexed/name-aware errors. | Reject empty `charts`, duplicates, and missing required fields per chart. | `chartpatch/config.py:106`, `chartpatch/config.py:118`, `chartpatch/config.py:124`; `tests/test_chartpatch_config.py:178`, `tests/test_chartpatch_config.py:189`, `tests/test_chartpatch_config.py:196`, `tests/test_chartpatch_config.py:203`, `tests/test_chartpatch_config.py:236` | None. |
+| Failure behavior | pass | Multi-chart CLI stops after the failing chart. Failure output identifies configured chart name in a CLI prefix, and the structured failure report includes failed stage, source chart, version, and error message. | Fail fast and identify chart name, source chart, version, and failed stage. | `chartpatch/cli.py:80`; `chartpatch/workflow.py:566`; `tests/test_chartpatch_cli.py:328`, `tests/test_chartpatch_cli.py:355`, `tests/test_chartpatch_cli.py:660` | None. |
+| Report content | gap | Sync success reports are rendered one chart at a time and `SyncResult` does not carry `chart_name`. On a later chart failure, completed chart output has already been printed to stdout, but the failure report itself has no aggregate summary of completed chart results. | Architecture expects structured per-chart results first, final human-readable output from those results, chart identity in reports, and completed chart results preserved when a later chart fails. | `chartpatch/cli.py:51`, `chartpatch/workflow.py:111`, `chartpatch/workflow.py:487`, `chartpatch/workflow.py:566`; `tests/test_chartpatch_cli.py:579` | Add multi-chart sync aggregate reporting and completed-result preservation. |
+| Workspace isolation | not verified | The single-chart workflow creates a fresh `tmp/chartpatch-sync-*` directory via `tempfile.mkdtemp`, and multi-chart CLI dispatch calls that workflow per chart. I did not find a regression that runs two real chart workflows and asserts distinct workspaces or no state leakage. | Each chart gets an isolated temporary workspace; patch, Git, render, package, and rewrite state cannot leak between charts. | `chartpatch/workflow.py:454`; single-chart coverage at `tests/test_chartpatch_sync.py:203`, `tests/test_chartpatch_sync.py:574`; multi-chart dispatch coverage at `tests/test_chartpatch_cli.py:254` | Add multi-chart workspace isolation regression coverage. |
+| Test coverage | gap | Unit and regression tests cover normalization, plan output, multi-chart dispatch, fail-fast behavior, and many single-chart sync failures. Missing coverage remains for aggregate multi-chart failure reporting and true multi-chart workspace isolation. Normal tests are configured to exclude e2e, and Kyverno e2e is opt-in. | Normal tests must avoid real `helm`, `git`, `skopeo`, registry, Docker, and k3s; regression coverage should include multi-chart plan, sync dispatch, failure preservation, and workspace isolation. | `pyproject.toml:22`; `tests/test_chartpatch_e2e_kyverno.py:37`; `tests/e2e_support.py:15`; `tests/test_chartpatch_cli.py:254`; `tests/test_chartpatch_sync.py:203` | Add deterministic multi-chart aggregate-report and workspace-isolation tests using fakes. |
 
-## Existing e2e scaffolding
+## Gap details
 
-No chartpatch Kyverno, local registry, `k3s`, or Kubernetes install e2e scaffold appears to exist. The only e2e-named tests currently present are factory dry-run tests: `tests/test_e2e_dry_run_cli.py` and `tests/test_e2e_planner_cli.py`. They do not exercise `chartpatch sync` against a real registry, real Helm chart, `skopeo`, or Kubernetes cluster.
+### Report content
+
+- Observed: `chartpatch sync` prints each `render_sync_report(result)` immediately inside the dispatch loop. `SyncResult` has source chart fields but no configured chart name, and `render_sync_failure_report` only renders the failing error context. A later-chart failure leaves the completed chart report on stdout, but there is no final aggregate report that includes completed chart results plus the failing chart.
+- Expected: the architecture calls for structured per-chart results, final human-readable output from those results, chart identity in reports, and preservation of completed chart results when a later chart fails.
+- References: `chartpatch/cli.py:51`, `chartpatch/workflow.py:111`, `chartpatch/workflow.py:487`, `chartpatch/workflow.py:566`, `tests/test_chartpatch_cli.py:579`.
+- Recommended follow-up task title: Add Multi-Chart Sync Aggregate Reporting And Failure Preservation.
+
+### Test coverage
+
+- Observed: current tests cover config normalization, plan output, CLI multi-chart dispatch ordering, and fail-fast behavior, but do not assert an aggregate failure report preserving completed results and do not execute two real single-chart workflow runs to prove workspace isolation.
+- Expected: regression coverage should include failure in a later chart with completed result preservation, separate temporary workspace per chart, and no state leakage.
+- References: dispatch tests at `tests/test_chartpatch_cli.py:254`, fail-fast tests at `tests/test_chartpatch_cli.py:328` and `tests/test_chartpatch_cli.py:355`, single-workspace coverage at `tests/test_chartpatch_sync.py:203`.
+- Recommended follow-up task title: Add Multi-Chart Aggregate Failure And Workspace Isolation Regressions.
+
+## Next smallest implementation task
+
+Add Multi-Chart Sync Aggregate Reporting And Failure Preservation.
+
+That task should be narrowly scoped to adding a small multi-chart result/failure wrapper, carrying configured chart names into sync results or report rendering, and updating CLI/report tests for success plus second-chart failure. It should not change the single-chart workflow internals.
 
 ## Tests added or updated
 
-None. The task explicitly did not require new tests and limited writes to the audit report unless stale expectations blocked audit execution.
+None. New tests were not necessary to perform the audit, and the task allowed test changes only if needed to document audited behavior.
 
 ## Commands run
 
-- `sed -n ... runs/035/input/task.md`
-- `sed -n ... runs/035/input/factory.yaml`
-- `sed -n ... runs/034/input/feature.md`
-- `sed -n ... runs/034/plan.md`
-- `sed -n ... runs/034/architecture.md`
-- `sed -n ... runs/034/input/build-memory.md`
+- `pwd && rg --files -g '!agent_factory/**' -g '!runs/**' | head -200`
+- `sed -n '1,220p' runs/059/input/task.md`
+- `sed -n '1,220p' runs/059/input/factory.yaml`
+- `sed -n '1,260p' runs/058/architecture.md`
+- `sed -n '1,260p' runs/058/plan.md`
+- `sed -n '1,260p' runs/058/input/build-memory.md`
 - `git status --short`
-- `rg --files -g '!agent_factory/**' -g '!runs/**'`
-- `nl -ba ... | sed -n ...` for relevant `chartpatch` modules and tests
-- `rg -n "e2e|k3s|kyverno|registry|skip|pytest.mark" tests chartpatch pyproject.toml`
-- `git diff -- build-memory.md`
-- `pytest` failed: `/bin/bash: line 1: pytest: command not found`
-- `python -m pytest` failed: `/usr/bin/python: No module named pytest`
+- `sed -n ...` and `nl -ba ...` for relevant `chartpatch` modules and tests
+- `rg -n "multi|charts|run_sync|run_single_chart_sync|Processing chart|sync failed|workspace|failed stage|ChartPatch sync report" tests chartpatch -g '!agent_factory/**' -g '!runs/**'`
+- `pytest tests/test_chartpatch_config.py tests/test_chartpatch_plan.py tests/test_chartpatch_cli.py tests/test_chartpatch_sync.py` failed because `pytest` is not on PATH.
+- `python -m pytest tests/test_chartpatch_config.py tests/test_chartpatch_plan.py tests/test_chartpatch_cli.py tests/test_chartpatch_sync.py` failed because the Python environment has no `pytest` module.
+- `python -m chartpatch plan tests/fixtures/chartpatch/valid-kube-prometheus-stack.yaml`
+- `python -m chartpatch plan tests/fixtures/chartpatch/valid-multi-chart.yaml`
+- Inline Python validation check for empty `charts` and duplicate chart names.
+- Inline Python CLI monkeypatch check for multi-chart second-chart failure.
 
 ## Test result
 
-The existing test suite could not be run in this environment because `pytest` is not installed and is not available as a Python module. No product test failures were observed because the test runner could not start.
+The targeted pytest suite could not run in this environment because `pytest` is not installed. Direct CLI and inline Python checks confirmed the audited plan, validation, and multi-chart fail-fast observations without invoking real Helm, Git, Skopeo, registry, Docker, or k3s.
 
 ## Risks and follow-up work
 
-- Highest-priority missing regression coverage: add workflow-level failure-stage tests for patch rejection leftovers (`*.rej` and `.git/rebase-apply`) and rendered failure reports for package and OCI push failures.
-- E2E coverage is still absent for the full MVP with real Helm, Skopeo, local registry, packaged OCI chart push, and Kyverno/k3s install. This should remain gated and skipped cleanly when infrastructure is unavailable.
-- Confirm whether registry-less image references should be normalized before mirroring. Current code and tests preserve the discovered source image string exactly.
-- Exact-string image rewrite is pragmatic for the MVP, but charts that split image registry/repository/tag across values may rely on post-rewrite render verification to fail rather than being rewritten successfully.
+- Multi-chart report hardening is still needed so final failure output preserves completed chart results in one structured report.
+- Multi-chart workspace isolation is plausible from the current code path but lacks a direct regression test.
+- The report path should carry configured chart names, not only source chart names, because those can differ.

@@ -135,6 +135,36 @@ class SyncResult:
     pushed_chart_ref: str | None = None
 
 
+@dataclass(frozen=True)
+class ChartSyncReport:
+    chart_name: str
+    source_repo: str
+    source_chart: str
+    source_version: str
+    patch_file: str
+    registry_url: str
+    output_chart_ref: str
+    result: SyncResult | None = None
+    error: SyncWorkflowError | None = None
+
+    def __post_init__(self) -> None:
+        if (self.result is None) == (self.error is None):
+            raise ValueError("chart sync report must have exactly one result or error")
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result is not None
+
+
+@dataclass(frozen=True)
+class MultiChartSyncReport:
+    entries: tuple[ChartSyncReport, ...]
+
+    @property
+    def succeeded(self) -> bool:
+        return all(entry.succeeded for entry in self.entries)
+
+
 class SyncWorkflowError(RuntimeError):
     """Raised when the sync workflow cannot complete a required step."""
 
@@ -160,6 +190,44 @@ class SyncWorkflowError(RuntimeError):
         if self.stage is None:
             return self.message
         return f"stage {self.stage} failed: {self.message}"
+
+
+def build_successful_chart_sync_report(
+    chart: NormalizedChartConfig,
+    result: SyncResult,
+) -> ChartSyncReport:
+    return ChartSyncReport(
+        chart_name=chart.chart_name,
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
+        patch_file=chart.patch_file,
+        registry_url=chart.registry_url,
+        output_chart_ref=chart.output_chart_ref,
+        result=result,
+    )
+
+
+def build_failed_chart_sync_report(
+    chart: NormalizedChartConfig,
+    error: SyncWorkflowError,
+) -> ChartSyncReport:
+    return ChartSyncReport(
+        chart_name=chart.chart_name,
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
+        patch_file=chart.patch_file,
+        registry_url=chart.registry_url,
+        output_chart_ref=chart.output_chart_ref,
+        error=error,
+    )
+
+
+def aggregate_chart_sync_reports(
+    entries: tuple[ChartSyncReport, ...],
+) -> MultiChartSyncReport:
+    return MultiChartSyncReport(entries=entries)
 
 
 def run_sync(
@@ -484,21 +552,34 @@ def create_sync_workspace(
     )
 
 
-def render_sync_report(result: SyncResult) -> str:
+def render_sync_report(
+    result: SyncResult,
+    *,
+    chart_name: str | None = None,
+    status: str | None = None,
+) -> str:
     lines = [
         "ChartPatch sync report",
-        f"Source chart repo: {result.source_repo}",
-        f"Source chart name: {result.source_chart}",
-        f"Source chart version: {result.source_version}",
-        f"Configured patch file: {result.patch_file}",
-        f"Local registry URL: {result.registry_url}",
-        f"Output OCI chart reference: {result.output_chart_ref}",
-        f"Workspace path: {result.workspace_path}",
-        f"Pulled chart archive: {result.chart_archive_path}",
-        f"Unpacked chart path: {result.unpacked_chart_path}",
-        f"Original render output: {result.original_render_path}",
-        f"Discovered images: {len(result.discovered_images)}",
     ]
+    if chart_name is not None:
+        lines.append(f"Configured chart name: {chart_name}")
+    if status is not None:
+        lines.append(f"Sync status: {status}")
+    lines.extend(
+        [
+            f"Source chart repo: {result.source_repo}",
+            f"Source chart name: {result.source_chart}",
+            f"Source chart version: {result.source_version}",
+            f"Configured patch file: {result.patch_file}",
+            f"Local registry URL: {result.registry_url}",
+            f"Output OCI chart reference: {result.output_chart_ref}",
+            f"Workspace path: {result.workspace_path}",
+            f"Pulled chart archive: {result.chart_archive_path}",
+            f"Unpacked chart path: {result.unpacked_chart_path}",
+            f"Original render output: {result.original_render_path}",
+            f"Discovered images: {len(result.discovered_images)}",
+        ]
+    )
     lines.extend(f"  - {image}" for image in sorted(result.discovered_images))
     if result.image_target_mappings:
         lines.append(f"Image target mappings: {len(result.image_target_mappings)}")
@@ -577,6 +658,39 @@ def render_sync_failure_report(error: SyncWorkflowError) -> str:
         lines.append(f"Workspace path: {error.workspace_path}")
     lines.append("Error:")
     lines.append(error.message)
+    return "\n".join(lines) + "\n"
+
+
+def render_chart_sync_report(report: ChartSyncReport) -> str:
+    if report.result is not None:
+        return render_sync_report(
+            report.result,
+            chart_name=report.chart_name,
+            status="success",
+        )
+
+    assert report.error is not None
+    lines = [
+        "ChartPatch sync failed",
+        f"Configured chart name: {report.chart_name}",
+        "Sync status: failure",
+    ]
+    if report.error.stage is not None:
+        lines.append(f"Failed stage: {report.error.stage}")
+    lines.extend(
+        [
+            f"Source chart repo: {report.source_repo}",
+            f"Source chart name: {report.source_chart}",
+            f"Source chart version: {report.source_version}",
+            f"Configured patch file: {report.patch_file}",
+            f"Local registry URL: {report.registry_url}",
+            f"Output OCI chart reference: {report.output_chart_ref}",
+        ]
+    )
+    if report.error.workspace_path is not None:
+        lines.append(f"Workspace path: {report.error.workspace_path}")
+    lines.append("Error:")
+    lines.append(report.error.message)
     return "\n".join(lines) + "\n"
 
 

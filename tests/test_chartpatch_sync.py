@@ -18,6 +18,10 @@ from chartpatch.workflow import (
     STAGE_PATCH_APPLY,
     SyncResult,
     SyncWorkflowError,
+    aggregate_chart_sync_reports,
+    build_failed_chart_sync_report,
+    build_successful_chart_sync_report,
+    render_chart_sync_report,
     render_sync_failure_report,
     render_sync_report,
     run_single_chart_sync,
@@ -65,6 +69,37 @@ spec:
         - name: app
           image: localhost:5000/docker.io/bitnami/nginx:1.27.4
 """
+
+
+def _normalized_chart(name: str) -> NormalizedChartConfig:
+    return NormalizedChartConfig(
+        chart_name=name,
+        source_repo=f"https://example.test/{name}",
+        source_chart=name,
+        source_version="1.0.0",
+        patch_file=f"patches/{name}.patch",
+        output_chart_ref=f"oci://localhost:5000/helm/{name}",
+        helm_lint=False,
+        helm_template=False,
+        registry_url="localhost:5000",
+    )
+
+
+def _minimal_sync_result(chart: NormalizedChartConfig, tmp_path: Path) -> SyncResult:
+    workspace = tmp_path / f"chartpatch-sync-{chart.chart_name}"
+    return SyncResult(
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
+        patch_file=chart.patch_file,
+        registry_url=chart.registry_url,
+        output_chart_ref=chart.output_chart_ref,
+        workspace_path=workspace,
+        chart_archive_path=workspace / "downloaded" / f"{chart.source_chart}.tgz",
+        unpacked_chart_path=workspace / "unpacked" / chart.source_chart,
+        original_render_path=workspace / "rendered" / "original.yaml",
+        discovered_images=(),
+    )
 
 
 class StubRunner:
@@ -548,6 +583,57 @@ def test_sync_report_renders_image_sections_in_deterministic_order(tmp_path: Pat
     assert (
         report.index("  - a.example/app:1 -> localhost:5000/a.example/app:1: passed")
         < report.index("  - z.example/app:1 -> localhost:5000/z.example/app:1: passed")
+    )
+
+
+def test_multi_chart_sync_report_aggregates_successes_in_order(tmp_path: Path) -> None:
+    first = _normalized_chart("alpha")
+    second = _normalized_chart("beta")
+    entries = (
+        build_successful_chart_sync_report(first, _minimal_sync_result(first, tmp_path)),
+        build_successful_chart_sync_report(second, _minimal_sync_result(second, tmp_path)),
+    )
+
+    aggregate = aggregate_chart_sync_reports(entries)
+    rendered = "".join(render_chart_sync_report(entry) for entry in aggregate.entries)
+
+    assert aggregate.succeeded is True
+    assert [entry.chart_name for entry in aggregate.entries] == ["alpha", "beta"]
+    assert rendered.index("Configured chart name: alpha") < rendered.index(
+        "Configured chart name: beta"
+    )
+    assert rendered.count("Sync status: success") == 2
+
+
+def test_multi_chart_sync_report_aggregates_mixed_success_and_failure(
+    tmp_path: Path,
+) -> None:
+    first = _normalized_chart("alpha")
+    second = _normalized_chart("beta")
+    error = SyncWorkflowError(
+        "helm push failed: denied",
+        stage=STAGE_OCI_PUSH,
+        source_repo=second.source_repo,
+        source_chart=second.source_chart,
+        source_version=second.source_version,
+        workspace_path=tmp_path / "beta-workspace",
+    )
+    entries = (
+        build_successful_chart_sync_report(first, _minimal_sync_result(first, tmp_path)),
+        build_failed_chart_sync_report(second, error),
+    )
+
+    aggregate = aggregate_chart_sync_reports(entries)
+    rendered = "".join(render_chart_sync_report(entry) for entry in aggregate.entries)
+
+    assert aggregate.succeeded is False
+    assert [entry.succeeded for entry in aggregate.entries] == [True, False]
+    assert "Configured chart name: alpha" in rendered
+    assert "Configured chart name: beta" in rendered
+    assert "Failed stage: OCI push" in rendered
+    assert "Output OCI chart reference: oci://localhost:5000/helm/beta" in rendered
+    assert rendered.index("Configured chart name: alpha") < rendered.index(
+        "Configured chart name: beta"
     )
 
 

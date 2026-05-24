@@ -11,6 +11,10 @@ from .report import render_plan
 from .workflow import (
     STAGE_DEPENDENCY_CHECK,
     SyncWorkflowError,
+    aggregate_chart_sync_reports,
+    build_failed_chart_sync_report,
+    build_successful_chart_sync_report,
+    render_chart_sync_report,
     render_sync_failure_report,
     render_sync_report,
     run_single_chart_sync as run_sync,
@@ -48,11 +52,32 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(args.config)
             charts = normalize_chart_entries(config)
             check_required_binaries()
-            for index, chart in enumerate(charts, start=1):
-                if config.is_multi_chart:
-                    print(f"Processing chart {index}/{len(charts)}: {chart.chart_name}")
-                result = run_sync(chart)
+            if not config.is_multi_chart:
+                result = run_sync(charts[0])
                 print(render_sync_report(result), end="")
+                return 0
+
+            reports = []
+            for index, chart in enumerate(charts, start=1):
+                print(
+                    f"Processing chart {index}/{len(charts)}: {chart.chart_name}",
+                    flush=True,
+                )
+                try:
+                    result = run_sync(chart)
+                except SyncWorkflowError as exc:
+                    report = build_failed_chart_sync_report(chart, exc)
+                    reports.append(report)
+                    print(render_chart_sync_report(report), end="", file=sys.stderr)
+                    continue
+
+                report = build_successful_chart_sync_report(chart, result)
+                reports.append(report)
+                print(render_chart_sync_report(report), end="", flush=True)
+
+            aggregate = aggregate_chart_sync_reports(tuple(reports))
+            if not aggregate.succeeded:
+                return 1
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

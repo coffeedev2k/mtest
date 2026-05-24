@@ -12,8 +12,11 @@ from chartpatch.dependencies import MissingRuntimeDependencies
 from chartpatch.runner import CommandRunner
 from chartpatch.workflow import (
     STAGE_IMAGE_DISCOVERY,
+    STAGE_IMAGE_MIRROR,
     STAGE_OCI_PUSH,
     STAGE_PACKAGE,
+    STAGE_PATCH_APPLY,
+    STAGE_REWRITE_VERIFICATION,
     SyncResult,
     SyncWorkflowError,
 )
@@ -325,18 +328,20 @@ charts:
     assert "Processing chart 1/1: kube-prometheus-stack" in captured.out
 
 
-def test_sync_multi_chart_stops_when_first_chart_fails(monkeypatch, capsys) -> None:
+def test_sync_multi_chart_continues_when_first_chart_fails(monkeypatch, capsys) -> None:
     calls: list[str] = []
 
     def fail_first(chart: NormalizedChartConfig) -> SyncResult:
         calls.append(chart.chart_name)
-        raise SyncWorkflowError(
-            "first chart failed",
-            stage=STAGE_PACKAGE,
-            source_repo=chart.source_repo,
-            source_chart=chart.source_chart,
-            source_version=chart.source_version,
-        )
+        if chart.chart_name == "kube-prometheus-stack":
+            raise SyncWorkflowError(
+                "first chart failed",
+                stage=STAGE_PACKAGE,
+                source_repo=chart.source_repo,
+                source_chart=chart.source_chart,
+                source_version=chart.source_version,
+            )
+        return _sync_result_for(chart)
 
     monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
     monkeypatch.setattr(cli, "run_sync", fail_first)
@@ -345,14 +350,17 @@ def test_sync_multi_chart_stops_when_first_chart_fails(monkeypatch, capsys) -> N
 
     captured = capsys.readouterr()
     assert result == 1
-    assert calls == ["kube-prometheus-stack"]
+    assert calls == ["kube-prometheus-stack", "kyverno"]
     assert "Processing chart 1/2: kube-prometheus-stack" in captured.out
-    assert "Processing chart 2/2: kyverno" not in captured.out
-    assert "ChartPatch sync failed for chart: kube-prometheus-stack" in captured.err
+    assert "Processing chart 2/2: kyverno" in captured.out
+    assert "Configured chart name: kyverno" in captured.out
+    assert "ChartPatch sync failed" in captured.err
+    assert "Configured chart name: kube-prometheus-stack" in captured.err
+    assert "Failed stage: package" in captured.err
     assert "first chart failed" in captured.err
 
 
-def test_sync_multi_chart_stops_when_later_chart_fails(
+def test_sync_multi_chart_preserves_successes_when_later_chart_fails(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -424,12 +432,60 @@ charts:
 
     captured = capsys.readouterr()
     assert result == 1
-    assert calls == ["alpha", "beta"]
+    assert calls == ["alpha", "beta", "gamma"]
     assert "Processing chart 1/3: alpha" in captured.out
     assert "Processing chart 2/3: beta" in captured.out
-    assert "Processing chart 3/3: gamma" not in captured.out
-    assert "ChartPatch sync failed for chart: beta" in captured.err
+    assert "Processing chart 3/3: gamma" in captured.out
+    assert "Configured chart name: alpha" in captured.out
+    assert "Configured chart name: gamma" in captured.out
+    assert "ChartPatch sync failed" in captured.err
+    assert "Configured chart name: beta" in captured.err
+    assert "Failed stage: OCI push" in captured.err
     assert "second chart failed" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("stage", "message"),
+    [
+        (STAGE_PATCH_APPLY, "patch did not apply"),
+        (STAGE_IMAGE_MIRROR, "skopeo copy failed"),
+        (STAGE_REWRITE_VERIFICATION, "patched image verification failed"),
+        (STAGE_OCI_PUSH, "helm push failed"),
+    ],
+)
+def test_sync_multi_chart_partial_failure_reports_success_and_failure_stage(
+    monkeypatch,
+    capsys,
+    stage: str,
+    message: str,
+) -> None:
+    calls: list[str] = []
+
+    def fail_second(chart: NormalizedChartConfig) -> SyncResult:
+        calls.append(chart.chart_name)
+        if chart.chart_name == "kyverno":
+            raise SyncWorkflowError(
+                message,
+                stage=stage,
+                source_repo=chart.source_repo,
+                source_chart=chart.source_chart,
+                source_version=chart.source_version,
+            )
+        return _sync_result_for(chart)
+
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(cli, "run_sync", fail_second)
+
+    result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls == ["kube-prometheus-stack", "kyverno"]
+    assert "Configured chart name: kube-prometheus-stack" in captured.out
+    assert "Sync status: success" in captured.out
+    assert "Configured chart name: kyverno" in captured.err
+    assert f"Failed stage: {stage}" in captured.err
+    assert message in captured.err
 
 
 def test_sync_multi_chart_uses_shared_validation_before_dispatch(
