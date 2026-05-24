@@ -122,6 +122,7 @@ def validate_config(raw: Any) -> ChartPatchConfig:
             for index, item in enumerate(charts_value)
         )
         _reject_duplicate_chart_names(charts)
+        _reject_duplicate_output_chart_refs(charts)
 
     return ChartPatchConfig(
         registry=RegistryConfig(url=registry_url),
@@ -247,3 +248,15 @@ def _reject_duplicate_chart_names(charts: tuple[ChartConfig, ...]) -> None:
                 f"first defined in charts[{seen[chart.name]}]"
             )
         seen[chart.name] = index
+
+
+def _reject_duplicate_output_chart_refs(charts: tuple[ChartConfig, ...]) -> None:
+    seen: dict[str, int] = {}
+    for index, chart in enumerate(charts):
+        chart_ref = chart.output.chart_ref
+        if chart_ref in seen:
+            raise ConfigError(
+                f"duplicate output.chart_ref {chart_ref!r} in charts[{index}] "
+                f"({chart.name}); first defined in charts[{seen[chart_ref]}]"
+            )
+        seen[chart_ref] = index

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -244,6 +245,66 @@ def test_duplicate_multi_chart_names_fail_validation() -> None:
         validate_config(raw)
 
 
+def test_duplicate_multi_chart_output_refs_fail_validation() -> None:
+    raw = _copy(MULTI_CHART_CONFIG)
+    raw["charts"][1]["output"]["chart_ref"] = (
+        "oci://localhost:5000/helm/kube-prometheus-stack"
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"duplicate output\.chart_ref "
+            r"'oci://localhost:5000/helm/kube-prometheus-stack' in charts\[1\]"
+        ),
+    ):
+        validate_config(raw)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "registry.url",
+        "charts.1.name",
+        "charts.1.source.repo",
+        "charts.1.source.chart",
+        "charts.1.source.version",
+        "charts.1.patch.file",
+        "charts.1.output.chart_ref",
+    ],
+)
+def test_multi_chart_required_fields_missing_fail_validation(field: str) -> None:
+    raw = _without_path(MULTI_CHART_CONFIG, field)
+
+    with pytest.raises(
+        ConfigError,
+        match=re.escape(f"{_display_path(field)} is required"),
+    ):
+        validate_config(raw)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "registry.url",
+        "charts.1.name",
+        "charts.1.source.repo",
+        "charts.1.source.chart",
+        "charts.1.source.version",
+        "charts.1.patch.file",
+        "charts.1.output.chart_ref",
+    ],
+)
+def test_multi_chart_required_string_fields_empty_fail_validation(field: str) -> None:
+    raw = _with_path(MULTI_CHART_CONFIG, field, "  ")
+
+    with pytest.raises(
+        ConfigError,
+        match=re.escape(f"{_display_path(field)} must be a non-empty string"),
+    ):
+        validate_config(raw)
+
+
 @pytest.mark.parametrize(
     "section",
     [
@@ -378,3 +439,35 @@ def _copy(value: object) -> object:
     if isinstance(value, list):
         return [_copy(item) for item in value]
     return value
+
+
+def _without_path(raw: dict[str, object], field: str) -> dict[str, object]:
+    copied = _copy(raw)
+    parent = _path_parent(copied, field)
+    del parent[field.split(".")[-1]]
+    return copied
+
+
+def _with_path(
+    raw: dict[str, object],
+    field: str,
+    value: object,
+) -> dict[str, object]:
+    copied = _copy(raw)
+    parent = _path_parent(copied, field)
+    parent[field.split(".")[-1]] = value
+    return copied
+
+
+def _path_parent(raw: object, field: str) -> dict[str, object]:
+    parent = raw
+    for part in field.split(".")[:-1]:
+        if isinstance(parent, list):
+            parent = parent[int(part)]
+        else:
+            parent = parent[part]
+    return parent
+
+
+def _display_path(field: str) -> str:
+    return field.replace("charts.1", "charts[1]", 1)
