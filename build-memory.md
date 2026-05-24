@@ -139,3 +139,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/080/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/081
   - commit: d80a77e
+- Task cycle 12: Task: Add Release Readiness Report
+  - task_file: /home/atarasov/l/mtest/runs/082/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/083
+  - commit: feac545
