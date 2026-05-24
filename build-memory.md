@@ -55,3 +55,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/034/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/035
   - commit: 4f884d1
+- Task cycle 7: Task: Add Regression Coverage For Patch Leftovers And Late-Stage Failure Reports
+  - task_file: /home/atarasov/l/mtest/runs/036/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/037
+  - commit: a0b5ab2

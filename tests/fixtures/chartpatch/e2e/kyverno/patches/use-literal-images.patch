@@ -1,0 +1,230 @@
+From 9ef5a1e6d70ab7ea84a95ab6d0760de034d766e1 Mon Sep 17 00:00:00 2001
+From: ChartPatch <chartpatch@example.invalid>
+Date: Sat, 23 May 2026 20:38:11 +0000
+Subject: [PATCH] Use literal images for chartpatch E2E
+
+---
+ templates/admission-controller/deployment.yaml      | 4 ++--
+ templates/background-controller/deployment.yaml     | 2 +-
+ templates/cleanup-controller/deployment.yaml        | 2 +-
+ templates/hooks/post-upgrade-migrate-resources.yaml | 2 +-
+ templates/hooks/pre-delete-remove-webhooks.yaml     | 2 +-
+ templates/hooks/pre-delete-scale-to-zero.yaml       | 2 +-
+ templates/reports-controller/deployment.yaml        | 2 +-
+ templates/reports-server/_helpers.tpl               | 2 +-
+ templates/tests/admission-controller-liveness.yaml  | 2 +-
+ templates/tests/admission-controller-metrics.yaml   | 2 +-
+ templates/tests/admission-controller-readiness.yaml | 2 +-
+ templates/tests/cleanup-controller-liveness.yaml    | 2 +-
+ templates/tests/cleanup-controller-metrics.yaml     | 2 +-
+ templates/tests/cleanup-controller-readiness.yaml   | 2 +-
+ templates/tests/reports-controller-metrics.yaml     | 2 +-
+ 15 files changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/templates/admission-controller/deployment.yaml b/templates/admission-controller/deployment.yaml
+index e33acc8..86dfc06 100644
+--- a/templates/admission-controller/deployment.yaml
++++ b/templates/admission-controller/deployment.yaml
+@@ -97,7 +97,7 @@ spec:
+         {{- include "kyverno.reportsServer.initContainer" . | nindent 8 }}
+         {{- end }}
+         - name: kyverno-pre
+-          image: {{ include "kyverno.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.admissionController.initContainer.image "defaultTag" (default .Chart.AppVersion .Values.admissionController.initContainer.image.tag)) | quote }}
++          image: "reg.kyverno.io/kyverno/kyvernopre:v1.18.1"
+           imagePullPolicy: {{ default .Values.admissionController.container.image.pullPolicy .Values.admissionController.initContainer.image.pullPolicy }}
+           args:
+             {{- include "kyverno.features.flags" (pick (mergeOverwrite (deepCopy .Values.features) .Values.admissionController.featuresOverride)
+@@ -152,7 +152,7 @@ spec:
+         {{- toYaml . | nindent 8 }}
+         {{- end }}
+         - name: kyverno
+-          image: {{ include "kyverno.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.admissionController.container.image "defaultTag" .Chart.AppVersion) | quote }}
++          image: "reg.kyverno.io/kyverno/kyverno:v1.18.1"
+           imagePullPolicy: {{ .Values.admissionController.container.image.pullPolicy }}
+           args:
+             - --caSecretName={{ template "kyverno.admission-controller.serviceName" . }}.{{ template "kyverno.namespace" . }}.svc.kyverno-tls-ca
+diff --git a/templates/background-controller/deployment.yaml b/templates/background-controller/deployment.yaml
+index d4d557d..52745a3 100644
+--- a/templates/background-controller/deployment.yaml
++++ b/templates/background-controller/deployment.yaml
+@@ -94,7 +94,7 @@ spec:
+       {{- end }}
+       containers:
+         - name: controller
+-          image: {{ include "kyverno.background-controller.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.backgroundController.image "defaultTag" .Chart.AppVersion) | quote }}
++          image: "reg.kyverno.io/kyverno/background-controller:v1.18.1"
+           imagePullPolicy: {{ .Values.backgroundController.image.pullPolicy }}
+           ports:
+           - containerPort: {{ .Values.backgroundController.server.port }}
+diff --git a/templates/cleanup-controller/deployment.yaml b/templates/cleanup-controller/deployment.yaml
+index 4482c8d..0fcddc2 100644
+--- a/templates/cleanup-controller/deployment.yaml
++++ b/templates/cleanup-controller/deployment.yaml
+@@ -94,7 +94,7 @@ spec:
+       {{- end }}
+       containers:
+         - name: controller
+-          image: {{ include "kyverno.cleanup-controller.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.cleanupController.image "defaultTag" .Chart.AppVersion) | quote }}
++          image: "reg.kyverno.io/kyverno/cleanup-controller:v1.18.1"
+           imagePullPolicy: {{ .Values.cleanupController.image.pullPolicy }}
+           ports:
+           - containerPort: {{ .Values.cleanupController.server.port }}
+diff --git a/templates/hooks/post-upgrade-migrate-resources.yaml b/templates/hooks/post-upgrade-migrate-resources.yaml
+index 8c0a3b4..7378365 100644
+--- a/templates/hooks/post-upgrade-migrate-resources.yaml
++++ b/templates/hooks/post-upgrade-migrate-resources.yaml
+@@ -108,7 +108,7 @@ spec:
+       restartPolicy: Never
+       containers:
+         - name: kyverno-cli
+-          image: {{ (include "kyverno.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.crds.migration.image "defaultTag" (default .Chart.AppVersion .Values.crds.migration.image.tag))) | quote }}
++          image: "reg.kyverno.io/kyverno/kyverno-cli:v1.18.1"
+           imagePullPolicy: {{ .Values.crds.migration.image.pullPolicy }}
+           args:
+             - migrate
+diff --git a/templates/hooks/pre-delete-remove-webhooks.yaml b/templates/hooks/pre-delete-remove-webhooks.yaml
+index a310a6b..6d821af 100644
+--- a/templates/hooks/pre-delete-remove-webhooks.yaml
++++ b/templates/hooks/pre-delete-remove-webhooks.yaml
+@@ -40,7 +40,7 @@ spec:
+       {{- end }}
+       containers:
+         - name: kubectl
+-          image: {{ (include "kyverno.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.webhooksCleanup.image "defaultTag" (default .Chart.AppVersion .Values.webhooksCleanup.image.tag))) | quote }}
++          image: "ghcr.io/kyverno/readiness-checker:v1.18.1"
+           imagePullPolicy: {{ .Values.webhooksCleanup.image.pullPolicy }}
+           args:
+             - delete-webhooks
+diff --git a/templates/hooks/pre-delete-scale-to-zero.yaml b/templates/hooks/pre-delete-scale-to-zero.yaml
+index c988934..836fe7c 100644
+--- a/templates/hooks/pre-delete-scale-to-zero.yaml
++++ b/templates/hooks/pre-delete-scale-to-zero.yaml
+@@ -41,7 +41,7 @@ spec:
+       {{- end }}
+       containers:
+         - name: kubectl
+-          image: {{ (include "kyverno.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.webhooksCleanup.image "defaultTag" (default .Chart.AppVersion .Values.webhooksCleanup.image.tag))) | quote }}
++          image: "ghcr.io/kyverno/readiness-checker:v1.18.1"
+           imagePullPolicy: {{ .Values.webhooksCleanup.image.pullPolicy }}
+           args:
+             - scale-deploy
+diff --git a/templates/reports-controller/deployment.yaml b/templates/reports-controller/deployment.yaml
+index 6f82e80..4cb9239 100644
+--- a/templates/reports-controller/deployment.yaml
++++ b/templates/reports-controller/deployment.yaml
+@@ -95,7 +95,7 @@ spec:
+       {{- end }}
+       containers:
+         - name: controller
+-          image: {{ include "kyverno.reports-controller.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.reportsController.image "defaultTag" .Chart.AppVersion) | quote }}
++          image: "reg.kyverno.io/kyverno/reports-controller:v1.18.1"
+           imagePullPolicy: {{ .Values.reportsController.image.pullPolicy }}
+           ports:
+           - containerPort: {{ .Values.reportsController.server.port }}
+diff --git a/templates/reports-server/_helpers.tpl b/templates/reports-server/_helpers.tpl
+index 19e3841..25a5dda 100644
+--- a/templates/reports-server/_helpers.tpl
++++ b/templates/reports-server/_helpers.tpl
+@@ -19,7 +19,7 @@ Reports Server readiness init container
+ {{- define "kyverno.reportsServer.initContainer" -}}
+ {{- if and .Values.reportsServer.enabled .Values.reportsServer.waitForReady }}
+ - name: wait-for-reports-server
+-  image: {{ include "kyverno.image" (dict "globalRegistry" .Values.global.image.registry "image" .Values.test.image "defaultTag" .Values.test.image.tag) | quote }}
++  image: "ghcr.io/kyverno/readiness-checker:v1.18.1"
+   imagePullPolicy: {{ .Values.test.image.pullPolicy | default "IfNotPresent" }}
+   args:
+     - check-endpoints
+diff --git a/templates/tests/admission-controller-liveness.yaml b/templates/tests/admission-controller-liveness.yaml
+index 2d8b6bf..d6b85e0 100644
+--- a/templates/tests/admission-controller-liveness.yaml
++++ b/templates/tests/admission-controller-liveness.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+diff --git a/templates/tests/admission-controller-metrics.yaml b/templates/tests/admission-controller-metrics.yaml
+index ce60cb5..93a623a 100644
+--- a/templates/tests/admission-controller-metrics.yaml
++++ b/templates/tests/admission-controller-metrics.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+diff --git a/templates/tests/admission-controller-readiness.yaml b/templates/tests/admission-controller-readiness.yaml
+index 3d81384..ed8d712 100644
+--- a/templates/tests/admission-controller-readiness.yaml
++++ b/templates/tests/admission-controller-readiness.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+diff --git a/templates/tests/cleanup-controller-liveness.yaml b/templates/tests/cleanup-controller-liveness.yaml
+index ae0ea27..13cb26c 100644
+--- a/templates/tests/cleanup-controller-liveness.yaml
++++ b/templates/tests/cleanup-controller-liveness.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+diff --git a/templates/tests/cleanup-controller-metrics.yaml b/templates/tests/cleanup-controller-metrics.yaml
+index f6ee188..8f0a757 100644
+--- a/templates/tests/cleanup-controller-metrics.yaml
++++ b/templates/tests/cleanup-controller-metrics.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+diff --git a/templates/tests/cleanup-controller-readiness.yaml b/templates/tests/cleanup-controller-readiness.yaml
+index 6dd3511..c938ffc 100644
+--- a/templates/tests/cleanup-controller-readiness.yaml
++++ b/templates/tests/cleanup-controller-readiness.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+diff --git a/templates/tests/reports-controller-metrics.yaml b/templates/tests/reports-controller-metrics.yaml
+index 97aff6a..57ef55b 100644
+--- a/templates/tests/reports-controller-metrics.yaml
++++ b/templates/tests/reports-controller-metrics.yaml
+@@ -17,7 +17,7 @@ spec:
+   {{- end }}
+   containers:
+     - name: test
+-      image: {{ template "kyverno.test.image" . }}
++      image: "ghcr.io/kyverno/readiness-checker:latest"
+       imagePullPolicy: {{ template "kyverno.test.imagePullPolicy" . }}
+       {{- with .Values.test.resources }}
+       resources:
+-- 
+2.43.0
+
