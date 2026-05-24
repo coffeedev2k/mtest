@@ -96,7 +96,7 @@ def _iter_container_images(node: Any) -> tuple[str, ...]:
 
 def _collect_container_images(node: Any, images: list[str]) -> None:
     if isinstance(node, dict):
-        for field in ("containers", "initContainers"):
+        for field in ("containers", "initContainers", "ephemeralContainers"):
             containers = node.get(field)
             if isinstance(containers, list):
                 for container in containers:

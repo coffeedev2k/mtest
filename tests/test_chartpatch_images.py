@@ -44,6 +44,66 @@ spec:
     )
 
 
+def test_discovers_image_from_ephemeral_containers() -> None:
+    rendered = """
+apiVersion: v1
+kind: Pod
+spec:
+  ephemeralContainers:
+    - name: debugger
+      image: registry.example.com/debugger:1.0.0
+"""
+
+    assert discover_manifest_images(rendered) == ("registry.example.com/debugger:1.0.0",)
+
+
+def test_discovers_images_from_all_container_types_sorted() -> None:
+    rendered = """
+apiVersion: v1
+kind: Pod
+spec:
+  ephemeralContainers:
+    - name: debugger
+      image: registry.example.com/debugger:1.0.0
+  containers:
+    - name: app
+      image: registry.example.com/app:1.0.0
+  initContainers:
+    - name: migrate
+      image: registry.example.com/migrate:2.0.0
+"""
+
+    assert discover_manifest_images(rendered) == (
+        "registry.example.com/app:1.0.0",
+        "registry.example.com/debugger:1.0.0",
+        "registry.example.com/migrate:2.0.0",
+    )
+
+
+def test_deduplicates_images_across_all_container_types() -> None:
+    rendered = """
+apiVersion: v1
+kind: Pod
+spec:
+  initContainers:
+    - name: setup
+      image: registry.example.com/shared:1.0.0
+  containers:
+    - name: app
+      image: registry.example.com/shared:1.0.0
+    - name: worker
+      image: registry.example.com/worker:2.0.0
+  ephemeralContainers:
+    - name: debugger
+      image: registry.example.com/shared:1.0.0
+"""
+
+    assert discover_manifest_images(rendered) == (
+        "registry.example.com/shared:1.0.0",
+        "registry.example.com/worker:2.0.0",
+    )
+
+
 def test_discovers_images_from_deployment_template() -> None:
     rendered = """
 apiVersion: apps/v1
