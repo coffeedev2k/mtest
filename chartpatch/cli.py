@@ -46,15 +46,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         try:
             config = load_config(args.config)
-            if config.is_multi_chart:
-                raise ConfigError("multi-chart sync is not implemented yet")
-            chart = normalize_chart_entries(config)[0]
+            charts = normalize_chart_entries(config)
             check_required_binaries()
-            result = run_sync(chart)
+            for index, chart in enumerate(charts, start=1):
+                if config.is_multi_chart:
+                    print(f"Processing chart {index}/{len(charts)}: {chart.chart_name}")
+                result = run_sync(chart)
+                print(render_sync_report(result), end="")
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         except MissingRuntimeDependencies as exc:
+            chart = charts[0]
+            if config.is_multi_chart:
+                print(
+                    f"ChartPatch sync failed for chart: {chart.chart_name}",
+                    file=sys.stderr,
+                )
             print(
                 render_sync_failure_report(
                     SyncWorkflowError(
@@ -70,9 +78,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except SyncWorkflowError as exc:
+            if config.is_multi_chart:
+                print(
+                    f"ChartPatch sync failed for chart: {chart.chart_name}",
+                    file=sys.stderr,
+                )
             print(render_sync_failure_report(exc), end="", file=sys.stderr)
             return 1
-        print(render_sync_report(result), end="")
         return 0
 
     parser.error(f"unknown command: {args.command}")

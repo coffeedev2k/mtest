@@ -22,6 +22,29 @@ from chartpatch.workflow import (
 FIXTURES = Path("tests/fixtures/chartpatch")
 
 
+def _sync_result_for(chart: NormalizedChartConfig) -> SyncResult:
+    safe_name = chart.chart_name.replace("/", "-")
+    return SyncResult(
+        source_repo=chart.source_repo,
+        source_chart=chart.source_chart,
+        source_version=chart.source_version,
+        patch_file=chart.patch_file,
+        registry_url=chart.registry_url,
+        output_chart_ref=chart.output_chart_ref,
+        workspace_path=Path(f"tmp/chartpatch-sync-{safe_name}"),
+        chart_archive_path=Path(
+            f"tmp/chartpatch-sync-{safe_name}/downloaded/{safe_name}.tgz"
+        ),
+        unpacked_chart_path=Path(
+            f"tmp/chartpatch-sync-{safe_name}/unpacked/{safe_name}"
+        ),
+        original_render_path=Path(
+            f"tmp/chartpatch-sync-{safe_name}/rendered/original.yaml"
+        ),
+        discovered_images=(),
+    )
+
+
 def test_plan_valid_fixture_exits_zero_and_emits_stable_output() -> None:
     completed = subprocess.run(
         [
@@ -228,25 +251,36 @@ def test_sync_invalid_fixture_fails_before_workflow_execution(monkeypatch, capsy
     assert "chart.source.version is required" in captured.err
 
 
-def test_sync_multi_chart_config_fails_before_dependencies_or_workflow(
+def test_sync_multi_chart_config_dispatches_entries_in_order(
     monkeypatch,
     capsys,
 ) -> None:
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("multi-chart sync must fail before execution")
+    calls: list[NormalizedChartConfig] = []
 
-    monkeypatch.setattr(cli, "check_required_binaries", fail_if_called)
-    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+    def capture_run_sync(chart: NormalizedChartConfig) -> SyncResult:
+        calls.append(chart)
+        return _sync_result_for(chart)
+
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(cli, "run_sync", capture_run_sync)
 
     result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
 
     captured = capsys.readouterr()
-    assert result == 1
-    assert captured.out == ""
-    assert "multi-chart sync is not implemented yet" in captured.err
+    assert result == 0
+    assert captured.err == ""
+    assert [chart.chart_name for chart in calls] == [
+        "kube-prometheus-stack",
+        "kyverno",
+    ]
+    assert "Processing chart 1/2: kube-prometheus-stack" in captured.out
+    assert "Processing chart 2/2: kyverno" in captured.out
+    assert captured.out.index("Processing chart 1/2") < captured.out.index(
+        "Processing chart 2/2"
+    )
 
 
-def test_sync_single_entry_charts_config_is_still_plan_only(
+def test_sync_single_entry_charts_config_dispatches_one_chart(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -273,9 +307,160 @@ charts:
 """.lstrip(),
         encoding="utf-8",
     )
+    calls: list[NormalizedChartConfig] = []
+
+    def capture_run_sync(chart: NormalizedChartConfig) -> SyncResult:
+        calls.append(chart)
+        return _sync_result_for(chart)
+
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(cli, "run_sync", capture_run_sync)
+
+    result = cli.main(["sync", str(config)])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.err == ""
+    assert [chart.chart_name for chart in calls] == ["kube-prometheus-stack"]
+    assert "Processing chart 1/1: kube-prometheus-stack" in captured.out
+
+
+def test_sync_multi_chart_stops_when_first_chart_fails(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+
+    def fail_first(chart: NormalizedChartConfig) -> SyncResult:
+        calls.append(chart.chart_name)
+        raise SyncWorkflowError(
+            "first chart failed",
+            stage=STAGE_PACKAGE,
+            source_repo=chart.source_repo,
+            source_chart=chart.source_chart,
+            source_version=chart.source_version,
+        )
+
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(cli, "run_sync", fail_first)
+
+    result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls == ["kube-prometheus-stack"]
+    assert "Processing chart 1/2: kube-prometheus-stack" in captured.out
+    assert "Processing chart 2/2: kyverno" not in captured.out
+    assert "ChartPatch sync failed for chart: kube-prometheus-stack" in captured.err
+    assert "first chart failed" in captured.err
+
+
+def test_sync_multi_chart_stops_when_later_chart_fails(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = tmp_path / "three-charts.yaml"
+    config.write_text(
+        """
+registry:
+  url: localhost:5000
+
+charts:
+  - name: alpha
+    source:
+      repo: https://example.test/alpha
+      chart: alpha
+      version: 1.0.0
+    patch:
+      file: patches/alpha.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/alpha
+    verification:
+      helm_lint: false
+      helm_template: false
+  - name: beta
+    source:
+      repo: https://example.test/beta
+      chart: beta
+      version: 2.0.0
+    patch:
+      file: patches/beta.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/beta
+    verification:
+      helm_lint: false
+      helm_template: false
+  - name: gamma
+    source:
+      repo: https://example.test/gamma
+      chart: gamma
+      version: 3.0.0
+    patch:
+      file: patches/gamma.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/gamma
+    verification:
+      helm_lint: false
+      helm_template: false
+""".lstrip(),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fail_second(chart: NormalizedChartConfig) -> SyncResult:
+        calls.append(chart.chart_name)
+        if chart.chart_name == "beta":
+            raise SyncWorkflowError(
+                "second chart failed",
+                stage=STAGE_OCI_PUSH,
+                source_repo=chart.source_repo,
+                source_chart=chart.source_chart,
+                source_version=chart.source_version,
+            )
+        return _sync_result_for(chart)
+
+    monkeypatch.setattr(cli, "check_required_binaries", lambda: None)
+    monkeypatch.setattr(cli, "run_sync", fail_second)
+
+    result = cli.main(["sync", str(config)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls == ["alpha", "beta"]
+    assert "Processing chart 1/3: alpha" in captured.out
+    assert "Processing chart 2/3: beta" in captured.out
+    assert "Processing chart 3/3: gamma" not in captured.out
+    assert "ChartPatch sync failed for chart: beta" in captured.err
+    assert "second chart failed" in captured.err
+
+
+def test_sync_multi_chart_uses_shared_validation_before_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = tmp_path / "invalid-multi-chart.yaml"
+    config.write_text(
+        """
+registry:
+  url: localhost:5000
+
+charts:
+  - name: alpha
+    source:
+      repo: https://example.test/alpha
+      chart: alpha
+    patch:
+      file: patches/alpha.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/alpha
+    verification:
+      helm_lint: false
+      helm_template: false
+""".lstrip(),
+        encoding="utf-8",
+    )
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("top-level charts config must fail before execution")
+        raise AssertionError("invalid config must fail before dispatch")
 
     monkeypatch.setattr(cli, "check_required_binaries", fail_if_called)
     monkeypatch.setattr(cli, "run_sync", fail_if_called)
@@ -285,7 +470,8 @@ charts:
     captured = capsys.readouterr()
     assert result == 1
     assert captured.out == ""
-    assert "multi-chart sync is not implemented yet" in captured.err
+    assert "charts[0] (alpha)" in captured.err
+    assert "charts[0].source.version is required" in captured.err
 
 
 def test_sync_valid_fixture_exits_nonzero_when_dependency_is_missing(monkeypatch, capsys) -> None:
