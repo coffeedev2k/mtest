@@ -1,15 +1,16 @@
 # chartpatch
 
-`chartpatch` is an MVP CLI for syncing one pinned upstream Helm chart into a
-local unauthenticated OCI registry. It pulls the chart, renders the original
+`chartpatch` is an MVP CLI for syncing pinned upstream Helm charts into a local
+unauthenticated OCI registry. It pulls each chart, renders the original
 manifests to discover upstream container images, mirrors those images into the
 local registry, applies a reusable Git patch, rewrites chart image references to
 the local registry, verifies the patched chart, packages it, and pushes the
 patched chart as an OCI artifact.
 
-The MVP supports one configured chart per YAML config for `sync`. The read-only
-`plan` command also accepts a top-level `charts` list for previewing multiple
-chart entries.
+The CLI accepts both single-chart configs with a top-level `chart` mapping and
+multi-chart configs with a top-level `charts` list. `chartpatch plan CONFIG` and
+`chartpatch sync CONFIG` both normalize either shape through the same chart
+entry fields.
 
 ## Prerequisites
 
@@ -47,7 +48,7 @@ volumes:
 
 ## Config
 
-Use the MVP single-chart config shape:
+Use this single-chart config shape for one chart:
 
 ```yaml
 registry:
@@ -71,10 +72,42 @@ chart:
 All fields shown above are required. `verification.helm_lint` and
 `verification.helm_template` must be booleans.
 
-For `chartpatch plan` only, replace top-level `chart` with a non-empty
-top-level `charts` list containing entries with the same fields. Configs must
-not specify both `chart` and `charts`, and `sync` rejects `charts` because
-multi-chart sync is not implemented yet.
+For multiple charts, replace top-level `chart` with a non-empty top-level
+`charts` list containing entries with the same fields:
+
+```yaml
+registry:
+  url: localhost:5000
+
+charts:
+  - name: kube-prometheus-stack
+    source:
+      repo: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      version: 70.0.0
+    patch:
+      file: patches/kube-prometheus-stack.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kube-prometheus-stack
+    verification:
+      helm_lint: true
+      helm_template: true
+  - name: kyverno
+    source:
+      repo: https://kyverno.github.io/kyverno
+      chart: kyverno
+      version: 3.3.7
+    patch:
+      file: patches/kyverno.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kyverno
+    verification:
+      helm_lint: false
+      helm_template: true
+```
+
+Configs must specify either `chart` or `charts`, not both. `chartpatch plan` and
+`chartpatch sync` support both shapes.
 
 ## Commands
 
@@ -84,10 +117,10 @@ Print a side-effect-free execution plan:
 chartpatch plan config.yaml
 ```
 
-`plan` parses and validates the config, then prints the configured source chart,
-patch file, local registry target, output OCI chart reference, and verification
-steps. It must not mutate remote state, start containers, pull images, apply
-patches, or push charts.
+`plan` parses and validates the config, then prints each configured source
+chart, patch file, local registry target, output OCI chart reference, and
+verification steps. It must not mutate remote state, start containers, pull
+images, apply patches, or push charts.
 
 Run the sync workflow:
 
@@ -120,13 +153,17 @@ At a practical workflow level, `sync`:
     mappings, patch status, rewrite summary, verification status, package path,
     and pushed OCI chart reference.
 
+For a multi-chart config, `sync` processes chart entries in config order,
+prints per-chart results, continues to later charts after a chart failure, and
+exits non-zero when any chart fails.
+
 `sync` mutates the configured local registry by pushing mirrored images and the
 patched chart. The MVP assumes the local registry is unauthenticated.
 
 ## End-to-end validation
 
-The Kyverno E2E harness is excluded from default pytest runs. To run it, opt in
-with both the environment gate and marker selection:
+The Kyverno E2E harness is excluded from default pytest runs. It remains
+opt-in; to run it, use both the environment gate and marker selection:
 
 ```bash
 CHARTPATCH_RUN_E2E=1 python -m pytest -q -m e2e tests/test_chartpatch_e2e_kyverno.py
@@ -157,7 +194,6 @@ treats a non-zero `git am`, remaining `.rej` files, or an unfinished
 
 ## MVP limitations
 
-- One chart per config for `sync`; multi-chart config is plan-only.
 - Unauthenticated local registry only.
 - No registry authentication.
 - No multiple registries.
