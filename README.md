@@ -97,9 +97,8 @@ At a practical workflow level, `sync`:
 5. Discovers container images from the original rendered manifests before any
    patching or image rewriting.
 6. Maps each discovered image to a local target shaped as
-   `<local-registry>/<normalized-original-reference>`. In the current MVP
-   implementation, the suffix is the discovered rendered reference as-is, and
-   the local registry URL only has a trailing slash trimmed.
+   `<local-registry>/<normalized-original-reference>`, for example
+   `localhost:5000/docker.io/library/nginx:latest` for `nginx:latest`.
 7. Mirrors images with `skopeo copy`.
 8. Initializes a temporary Git repository in the unpacked chart, creates a
    baseline commit, and applies the configured patch with `git am --reject`.

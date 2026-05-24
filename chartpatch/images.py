@@ -33,7 +33,7 @@ def map_image_targets(
     mappings = tuple(
         ImageTargetMapping(
             source=source,
-            target=f"{registry_prefix}/{source}",
+            target=f"{registry_prefix}/{normalize_image_reference(source)}",
         )
         for source in unique_sources
     )
@@ -42,6 +42,29 @@ def map_image_targets(
             "image target mapping failed: expected exactly one target per source image"
         )
     return mappings
+
+
+def normalize_image_reference(image_reference: str) -> str:
+    """Return a deterministic image reference suffix for local registry targets."""
+    reference = image_reference.strip()
+    if not reference:
+        raise ImageTargetMappingError("image reference must not be empty")
+
+    first_component, separator, remainder = reference.partition("/")
+    if separator and _is_registry_component(first_component):
+        registry = first_component
+        repository = remainder
+    else:
+        registry = "docker.io"
+        repository = reference
+
+    if registry == "index.docker.io":
+        registry = "docker.io"
+
+    if registry == "docker.io" and "/" not in repository:
+        repository = f"library/{repository}"
+
+    return f"{registry}/{repository}"
 
 
 def discover_manifest_images(rendered_manifests: str) -> tuple[str, ...]:
@@ -89,3 +112,7 @@ def _collect_container_images(node: Any, images: list[str]) -> None:
     if isinstance(node, list):
         for item in node:
             _collect_container_images(item, images)
+
+
+def _is_registry_component(component: str) -> bool:
+    return "." in component or ":" in component or component == "localhost"

@@ -71,3 +71,7 @@ Feature: feature.md
   - task_file: /home/atarasov/l/mtest/runs/044/tasks/001-chartpatch-plan.md
   - execution_run: /home/atarasov/l/mtest/runs/045
   - commit: 2772378
+- Task cycle 4: Task: Run And Stabilize The Opt-In Kyverno E2E Harness
+  - task_file: /home/atarasov/l/mtest/runs/046/tasks/001-chartpatch-plan.md
+  - execution_run: /home/atarasov/l/mtest/runs/047
+  - commit: eee67ef

@@ -8,6 +8,7 @@ from chartpatch.images import (
     ManifestImageDiscoveryError,
     discover_manifest_images,
     map_image_targets,
+    normalize_image_reference,
 )
 
 
@@ -226,13 +227,28 @@ def test_maps_image_targets_handles_trailing_registry_slash() -> None:
     )
 
 
-def test_maps_image_targets_does_not_normalize_source_image() -> None:
+def test_maps_image_targets_normalizes_implicit_docker_hub_target() -> None:
     assert map_image_targets(("nginx:latest",), "localhost:5000") == (
         ImageTargetMapping(
             source="nginx:latest",
-            target="localhost:5000/nginx:latest",
+            target="localhost:5000/docker.io/library/nginx:latest",
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("source", "normalized"),
+    [
+        ("nginx:latest", "docker.io/library/nginx:latest"),
+        ("bitnami/nginx:1.27.4", "docker.io/bitnami/nginx:1.27.4"),
+        ("docker.io/nginx:latest", "docker.io/library/nginx:latest"),
+        ("index.docker.io/library/busybox:1.36", "docker.io/library/busybox:1.36"),
+        ("quay.io/prometheus/prometheus:v3.0.1", "quay.io/prometheus/prometheus:v3.0.1"),
+        ("localhost:5001/example/app:2.0", "localhost:5001/example/app:2.0"),
+    ],
+)
+def test_normalize_image_reference(source: str, normalized: str) -> None:
+    assert normalize_image_reference(source) == normalized
 
 
 def test_maps_image_targets_fails_clearly_for_empty_registry_url() -> None:
@@ -240,3 +256,10 @@ def test_maps_image_targets_fails_clearly_for_empty_registry_url() -> None:
         map_image_targets(("docker.io/bitnami/nginx:1.27.4",), "/")
 
     assert "registry URL must not be empty" in str(exc_info.value)
+
+
+def test_normalize_image_reference_fails_clearly_for_empty_source() -> None:
+    with pytest.raises(ImageTargetMappingError) as exc_info:
+        normalize_image_reference(" ")
+
+    assert "image reference must not be empty" in str(exc_info.value)
