@@ -168,6 +168,9 @@ def run_sync(
     repo_root: Path | None = None,
     runner: CommandRunner | None = None,
 ) -> SyncResult:
+    if config.is_multi_chart:
+        raise SyncWorkflowError("multi-chart sync is not implemented yet")
+
     command_runner = runner or CommandRunner()
     workflow_repo_root = repo_root or Path.cwd()
     try:

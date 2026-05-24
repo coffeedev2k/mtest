@@ -52,6 +52,32 @@ def test_plan_valid_fixture_exits_zero_and_emits_stable_output() -> None:
     )
 
 
+def test_plan_valid_multi_chart_fixture_exits_zero_and_labels_entries() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "chartpatch",
+            "plan",
+            str(FIXTURES / "valid-multi-chart.yaml"),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.stderr == ""
+    assert "Configured charts: 2" in completed.stdout
+    assert "Chart 1: kube-prometheus-stack" in completed.stdout
+    assert "Chart 2: kyverno" in completed.stdout
+    assert "  Source chart repo: https://kyverno.github.io/kyverno" in completed.stdout
+    assert "  Configured patch file: patches/kyverno.patch" in completed.stdout
+    assert "  Local registry URL: localhost:5000" in completed.stdout
+    assert "  Output OCI chart reference: oci://localhost:5000/helm/kyverno" in (
+        completed.stdout
+    )
+
+
 def test_plan_invalid_fixture_exits_nonzero_and_emits_useful_stderr() -> None:
     completed = subprocess.run(
         [
@@ -149,6 +175,66 @@ def test_sync_invalid_fixture_fails_before_workflow_execution(monkeypatch, capsy
     assert result == 1
     assert captured.out == ""
     assert "chart.source.version is required" in captured.err
+
+
+def test_sync_multi_chart_config_fails_before_dependencies_or_workflow(
+    monkeypatch,
+    capsys,
+) -> None:
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("multi-chart sync must fail before execution")
+
+    monkeypatch.setattr(cli, "check_required_binaries", fail_if_called)
+    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+
+    result = cli.main(["sync", str(FIXTURES / "valid-multi-chart.yaml")])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "multi-chart sync is not implemented yet" in captured.err
+
+
+def test_sync_single_entry_charts_config_is_still_plan_only(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = tmp_path / "single-entry-charts.yaml"
+    config.write_text(
+        """
+registry:
+  url: localhost:5000
+
+charts:
+  - name: kube-prometheus-stack
+    source:
+      repo: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      version: 70.0.0
+    patch:
+      file: patches/kube-prometheus-stack.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kube-prometheus-stack
+    verification:
+      helm_lint: true
+      helm_template: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("top-level charts config must fail before execution")
+
+    monkeypatch.setattr(cli, "check_required_binaries", fail_if_called)
+    monkeypatch.setattr(cli, "run_sync", fail_if_called)
+
+    result = cli.main(["sync", str(config)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "multi-chart sync is not implemented yet" in captured.err
 
 
 def test_sync_valid_fixture_exits_nonzero_when_dependency_is_missing(monkeypatch, capsys) -> None:

@@ -7,7 +7,9 @@ local registry, applies a reusable Git patch, rewrites chart image references to
 the local registry, verifies the patched chart, packages it, and pushes the
 patched chart as an OCI artifact.
 
-The MVP supports one configured chart per YAML config.
+The MVP supports one configured chart per YAML config for `sync`. The read-only
+`plan` command also accepts a top-level `charts` list for previewing multiple
+chart entries.
 
 ## Prerequisites
 
@@ -68,6 +70,11 @@ chart:
 
 All fields shown above are required. `verification.helm_lint` and
 `verification.helm_template` must be booleans.
+
+For `chartpatch plan` only, replace top-level `chart` with a non-empty
+top-level `charts` list containing entries with the same fields. Configs must
+not specify both `chart` and `charts`, and `sync` rejects `charts` because
+multi-chart sync is not implemented yet.
 
 ## Commands
 
@@ -150,7 +157,7 @@ treats a non-zero `git am`, remaining `.rej` files, or an unfinished
 
 ## MVP limitations
 
-- One chart per config.
+- One chart per config for `sync`; multi-chart config is plan-only.
 - Unauthenticated local registry only.
 - No registry authentication.
 - No multiple registries.

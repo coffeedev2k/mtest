@@ -22,6 +22,24 @@ VALID_CONFIG = {
     },
 }
 
+MULTI_CHART_CONFIG = {
+    "registry": {"url": "localhost:5000"},
+    "charts": [
+        VALID_CONFIG["chart"],
+        {
+            "name": "kyverno",
+            "source": {
+                "repo": "https://kyverno.github.io/kyverno",
+                "chart": "kyverno",
+                "version": "3.3.7",
+            },
+            "patch": {"file": "patches/kyverno.patch"},
+            "output": {"chart_ref": "oci://localhost:5000/helm/kyverno"},
+            "verification": {"helm_lint": False, "helm_template": True},
+        },
+    ],
+}
+
 
 @pytest.mark.parametrize(
     ("path", "expected"),
@@ -43,6 +61,34 @@ def test_valid_yaml_parses_successfully(path: str, expected: str) -> None:
         value = getattr(value, part)
 
     assert value == expected
+
+
+def test_legacy_top_level_chart_config_remains_single_chart() -> None:
+    config = validate_config(VALID_CONFIG)
+
+    assert len(config.charts) == 1
+    assert config.chart.name == "kube-prometheus-stack"
+
+
+def test_top_level_charts_config_parses_multiple_entries_in_order() -> None:
+    config = validate_config(MULTI_CHART_CONFIG)
+
+    assert config.is_multi_chart is True
+    assert tuple(chart.name for chart in config.charts) == (
+        "kube-prometheus-stack",
+        "kyverno",
+    )
+    assert config.charts[1].source.repo == "https://kyverno.github.io/kyverno"
+    assert config.charts[1].verification.helm_lint is False
+
+
+def test_top_level_charts_config_is_marked_plan_only_even_with_one_entry() -> None:
+    raw = {"registry": {"url": "localhost:5000"}, "charts": [VALID_CONFIG["chart"]]}
+
+    config = validate_config(raw)
+
+    assert config.is_multi_chart is True
+    assert len(config.charts) == 1
 
 
 def test_missing_file_returns_clean_error(tmp_path: Path) -> None:
@@ -85,11 +131,47 @@ def test_each_required_field_missing_fails_validation(field: str) -> None:
         validate_config(raw)
 
 
-@pytest.mark.parametrize("section", ["registry", "chart"])
+@pytest.mark.parametrize("section", ["registry"])
 def test_each_required_top_level_section_missing_fails_validation(section: str) -> None:
     raw = _without_field(VALID_CONFIG, section)
 
     with pytest.raises(ConfigError, match=f"{section} is required"):
+        validate_config(raw)
+
+
+def test_config_with_both_chart_and_charts_fails_validation() -> None:
+    raw = _copy(VALID_CONFIG)
+    raw["charts"] = [raw["chart"]]
+
+    with pytest.raises(
+        ConfigError,
+        match="config must specify either chart or charts, not both",
+    ):
+        validate_config(raw)
+
+
+def test_config_with_neither_chart_nor_charts_fails_validation() -> None:
+    raw = {"registry": {"url": "localhost:5000"}}
+
+    with pytest.raises(ConfigError, match="one of chart or charts is required"):
+        validate_config(raw)
+
+
+def test_empty_charts_fails_validation() -> None:
+    raw = {"registry": {"url": "localhost:5000"}, "charts": []}
+
+    with pytest.raises(ConfigError, match="charts must contain at least one chart"):
+        validate_config(raw)
+
+
+def test_multi_chart_item_missing_required_field_reports_index() -> None:
+    raw = _copy(MULTI_CHART_CONFIG)
+    del raw["charts"][1]["source"]["version"]
+
+    with pytest.raises(
+        ConfigError,
+        match=r"charts\[1\]\.source\.version is required",
+    ):
         validate_config(raw)
 
 
@@ -192,6 +274,15 @@ def test_valid_regression_fixture_parses() -> None:
     assert config.chart.verification.helm_template is True
 
 
+def test_valid_multi_chart_fixture_parses() -> None:
+    config = load_config(Path("tests/fixtures/chartpatch/valid-multi-chart.yaml"))
+
+    assert tuple(chart.name for chart in config.charts) == (
+        "kube-prometheus-stack",
+        "kyverno",
+    )
+
+
 def _without_field(raw: dict[str, object], field: str) -> dict[str, object]:
     copied = _copy(raw)
     parent = copied
@@ -215,4 +306,6 @@ def _with_field(raw: dict[str, object], field: str, value: object) -> dict[str, 
 def _copy(value: object) -> object:
     if isinstance(value, dict):
         return {key: _copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy(item) for item in value]
     return value

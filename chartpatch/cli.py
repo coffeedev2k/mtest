@@ -46,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         try:
             config = load_config(args.config)
+            if config.is_multi_chart:
+                raise ConfigError("multi-chart sync is not implemented yet")
             check_required_binaries()
             result = run_sync(config)
         except ConfigError as exc:

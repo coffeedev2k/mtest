@@ -1,0 +1,28 @@
+registry:
+  url: localhost:5000
+
+charts:
+  - name: kube-prometheus-stack
+    source:
+      repo: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      version: 70.0.0
+    patch:
+      file: patches/kube-prometheus-stack.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kube-prometheus-stack
+    verification:
+      helm_lint: true
+      helm_template: true
+  - name: kyverno
+    source:
+      repo: https://kyverno.github.io/kyverno
+      chart: kyverno
+      version: 3.3.7
+    patch:
+      file: patches/kyverno.patch
+    output:
+      chart_ref: oci://localhost:5000/helm/kyverno
+    verification:
+      helm_lint: false
+      helm_template: true

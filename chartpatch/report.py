@@ -1,21 +1,51 @@
 from __future__ import annotations
 
-from .plan import Plan, _enabled
+from .plan import ChartPlanEntry, Plan, _enabled
 
 
 def render_plan(plan: Plan) -> str:
+    if len(plan.entries) == 1:
+        return _render_single_plan(plan.entries[0])
+
     lines = [
         "ChartPatch execution plan",
-        f"Configured chart name: {plan.chart_name}",
-        f"Source chart repo: {plan.source_repo}",
-        f"Source chart name: {plan.source_chart}",
-        f"Source chart version: {plan.source_version}",
-        f"Configured patch file: {plan.patch_file}",
-        f"Local registry URL: {plan.registry_url}",
-        f"Output OCI chart reference: {plan.output_chart_ref}",
+        f"Configured charts: {len(plan.entries)}",
+    ]
+    for index, entry in enumerate(plan.entries, start=1):
+        lines.extend(
+            [
+                f"Chart {index}: {entry.chart_name}",
+                f"  Configured chart name: {entry.chart_name}",
+                f"  Source chart repo: {entry.source_repo}",
+                f"  Source chart name: {entry.source_chart}",
+                f"  Source chart version: {entry.source_version}",
+                f"  Configured patch file: {entry.patch_file}",
+                f"  Local registry URL: {entry.registry_url}",
+                f"  Output OCI chart reference: {entry.output_chart_ref}",
+                "  Verification steps:",
+                f"    helm_lint: {_enabled(entry.helm_lint)}",
+                f"    helm_template: {_enabled(entry.helm_template)}",
+            ]
+        )
+    lines.append(
+        "No remote mutation: plan only reads the config and prints this plan."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _render_single_plan(entry: ChartPlanEntry) -> str:
+    lines = [
+        "ChartPatch execution plan",
+        f"Configured chart name: {entry.chart_name}",
+        f"Source chart repo: {entry.source_repo}",
+        f"Source chart name: {entry.source_chart}",
+        f"Source chart version: {entry.source_version}",
+        f"Configured patch file: {entry.patch_file}",
+        f"Local registry URL: {entry.registry_url}",
+        f"Output OCI chart reference: {entry.output_chart_ref}",
         "Verification steps:",
-        f"  helm_lint: {_enabled(plan.helm_lint)}",
-        f"  helm_template: {_enabled(plan.helm_template)}",
+        f"  helm_lint: {_enabled(entry.helm_lint)}",
+        f"  helm_template: {_enabled(entry.helm_template)}",
         "No remote mutation: plan only reads the config and prints this plan.",
     ]
     return "\n".join(lines) + "\n"

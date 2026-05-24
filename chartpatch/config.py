@@ -51,7 +51,18 @@ class RegistryConfig:
 @dataclass(frozen=True)
 class ChartPatchConfig:
     registry: RegistryConfig
-    chart: ChartConfig
+    charts: tuple[ChartConfig, ...]
+    uses_charts_list: bool = False
+
+    @property
+    def chart(self) -> ChartConfig:
+        if len(self.charts) != 1:
+            raise ConfigError("multi-chart config does not have a single chart")
+        return self.charts[0]
+
+    @property
+    def is_multi_chart(self) -> bool:
+        return self.uses_charts_list
 
 
 def load_config(path: Path) -> ChartPatchConfig:
@@ -75,37 +86,68 @@ def validate_config(raw: Any) -> ChartPatchConfig:
         raise ConfigError("config must be a YAML mapping")
 
     registry = _required_mapping(raw, "registry")
-    chart = _required_mapping(raw, "chart")
-    source = _required_mapping(chart, "chart.source")
-    patch = _required_mapping(chart, "chart.patch")
-    output = _required_mapping(chart, "chart.output")
-    verification = _required_mapping(chart, "chart.verification")
-
     registry_url = _required_string(registry, "registry.url")
-    chart_ref = _required_string(output, "chart.output.chart_ref")
+
+    has_chart = "chart" in raw
+    has_charts = "charts" in raw
+    if has_chart and has_charts:
+        raise ConfigError("config must specify either chart or charts, not both")
+    if not has_chart and not has_charts:
+        raise ConfigError("one of chart or charts is required")
+
+    if has_chart:
+        charts = (_validate_chart_config(_required_mapping(raw, "chart"), "chart"),)
+    else:
+        charts_value = raw["charts"]
+        if not isinstance(charts_value, list):
+            raise ConfigError("charts must be a list")
+        if not charts_value:
+            raise ConfigError("charts must contain at least one chart")
+        charts = tuple(
+            _validate_chart_entry(item, index)
+            for index, item in enumerate(charts_value)
+        )
 
     return ChartPatchConfig(
         registry=RegistryConfig(url=registry_url),
-        chart=ChartConfig(
-            name=_required_string(chart, "chart.name"),
-            source=SourceConfig(
-                repo=_required_string(source, "chart.source.repo"),
-                chart=_required_string(source, "chart.source.chart"),
-                version=_required_string(source, "chart.source.version"),
+        charts=charts,
+        uses_charts_list=has_charts,
+    )
+
+
+def _validate_chart_entry(raw: Any, index: int) -> ChartConfig:
+    path = f"charts[{index}]"
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path} must be a mapping")
+    return _validate_chart_config(raw, path)
+
+
+def _validate_chart_config(chart: dict[str, Any], path: str) -> ChartConfig:
+    source = _required_mapping(chart, f"{path}.source")
+    patch = _required_mapping(chart, f"{path}.patch")
+    output = _required_mapping(chart, f"{path}.output")
+    verification = _required_mapping(chart, f"{path}.verification")
+    chart_ref = _required_string(output, f"{path}.output.chart_ref")
+
+    return ChartConfig(
+        name=_required_string(chart, f"{path}.name"),
+        source=SourceConfig(
+            repo=_required_string(source, f"{path}.source.repo"),
+            chart=_required_string(source, f"{path}.source.chart"),
+            version=_required_string(source, f"{path}.source.version"),
+        ),
+        patch=PatchConfig(file=_required_string(patch, f"{path}.patch.file")),
+        output=OutputConfig(chart_ref=chart_ref),
+        verification=VerificationConfig(
+            helm_lint=_required_bool(
+                verification,
+                "helm_lint",
+                f"{path}.verification.helm_lint",
             ),
-            patch=PatchConfig(file=_required_string(patch, "chart.patch.file")),
-            output=OutputConfig(chart_ref=chart_ref),
-            verification=VerificationConfig(
-                helm_lint=_required_bool(
-                    verification,
-                    "helm_lint",
-                    "chart.verification.helm_lint",
-                ),
-                helm_template=_required_bool(
-                    verification,
-                    "helm_template",
-                    "chart.verification.helm_template",
-                ),
+            helm_template=_required_bool(
+                verification,
+                "helm_template",
+                f"{path}.verification.helm_template",
             ),
         ),
     )
