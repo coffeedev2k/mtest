@@ -11,6 +11,9 @@ dependencies = [
 test = [
   "pytest>=8.0",
 ]
+build = [
+  "pyinstaller>=6.0,<7",
+]
 
 [project.scripts]
 agent-factory = "agent_factory.cli:main"

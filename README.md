@@ -12,6 +12,80 @@ multi-chart configs with a top-level `charts` list. `chartpatch plan CONFIG` and
 `chartpatch sync CONFIG` both normalize either shape through the same chart
 entry fields.
 
+## Binary
+
+The supported distribution is a standalone Linux executable. Build it with:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-build.txt
+make binary
+./dist/chartpatch --help
+```
+
+The build output is `dist/chartpatch`. Copy that file to a directory on `PATH`,
+for example:
+
+```bash
+sudo install -m 0755 dist/chartpatch /usr/local/bin/chartpatch
+```
+
+Python is only needed to build and test the executable. The installed binary
+does not require Python or this source tree. It still invokes `helm`, `git`,
+`skopeo`, and, for `quickrun`, Docker.
+
+## Quick start
+
+The repository includes a runnable example that adds an annotation to the
+pinned Kyverno chart, mirrors its container images, and publishes the changed
+chart to a local OCI registry.
+
+Build and run the complete example:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-build.txt
+make quickrun
+```
+
+`make quickrun` builds `dist/chartpatch`, starts a persistent Registry v2
+container named `chartpatch-registry`, waits until it is ready, and runs:
+
+```bash
+./dist/chartpatch quickrun chartpatch.yaml
+```
+
+For an already-built or installed binary, put a config and its patch file on
+the target system and run:
+
+```bash
+chartpatch quickrun /path/to/chartpatch.yaml
+```
+
+With no config argument, `quickrun` reads `./chartpatch.yaml`. It downloads
+Kyverno `3.8.1`, mirrors its images under `localhost:5000`,
+applies the example patch, verifies and packages the changed chart, and pushes
+it to the registry. Confirm that the artifacts are present and inspect the
+published chart metadata:
+
+```bash
+curl -s http://localhost:5000/v2/_catalog | python -m json.tool
+helm show chart oci://localhost:5000/helm/kyverno/kyverno --version 3.8.1
+```
+
+The Helm output includes the annotation
+`chartpatch.dev/quickstart: kyverno-patched`. To stop the persistent registry
+while keeping its data, run:
+
+```bash
+docker stop chartpatch-registry
+```
+
+This workflow requires the external tools listed below and network access to
+the upstream chart and image registries.
+
 ## Prerequisites
 
 Install these tools before running `chartpatch sync`:
@@ -19,7 +93,7 @@ Install these tools before running `chartpatch sync`:
 - `helm`
 - `git`
 - `skopeo`
-- Docker-compatible runtime for running a local Registry v2 instance
+- Docker for `quickrun` to run the local Registry v2 container
 
 Full local end-to-end validation is opt-in and also requires `kubectl` plus
 `k3d`, which starts a local `k3s` cluster for installing the patched chart.
@@ -28,13 +102,21 @@ Full local end-to-end validation is opt-in and also requires `kubectl` plus
 
 For local development, run an unauthenticated Docker Registry v2 on
 `localhost:5000`. The same registry stores mirrored container images and patched
-Helm chart OCI artifacts.
+Helm chart OCI artifacts. `quickrun` starts it automatically:
+
+```bash
+chartpatch quickrun chartpatch.yaml
+```
+
+The equivalent manual Compose definition remains in
+`examples/quickstart/compose.yaml`.
 
 ```yaml
 services:
   registry:
     image: registry:2
-    container_name: local-oci-registry
+    container_name: chartpatch-registry
+    restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
@@ -127,6 +209,16 @@ Run the sync workflow:
 ```bash
 chartpatch sync config.yaml
 ```
+
+Start or reuse a local Docker Registry v2 and then run the sync workflow:
+
+```bash
+chartpatch quickrun config.yaml
+```
+
+`quickrun` only accepts a registry URL on `localhost` or `127.0.0.1` with an
+explicit port. It reuses a reachable registry, starts an existing stopped
+`chartpatch-registry` container, or creates one from `registry:2`.
 
 At a practical workflow level, `sync`:
 

@@ -5,8 +5,19 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_config, normalize_chart_entries
-from .dependencies import MissingRuntimeDependencies, check_required_binaries
+from .dependencies import (
+    REQUIRED_SYNC_BINARIES,
+    MissingRuntimeDependencies,
+    check_required_binaries,
+)
 from .plan import build_plan
+from .registry import (
+    DEFAULT_REGISTRY_CONTAINER,
+    DEFAULT_REGISTRY_IMAGE,
+    DEFAULT_REGISTRY_TIMEOUT_SECONDS,
+    LocalRegistryError,
+    ensure_local_registry,
+)
 from .report import render_plan
 from .workflow import (
     STAGE_DEPENDENCY_CHECK,
@@ -31,6 +42,38 @@ def build_parser() -> argparse.ArgumentParser:
     sync = subparsers.add_parser("sync", help="Pull and render the configured chart")
     sync.add_argument("config", type=Path, help="YAML config file")
 
+    quickrun = subparsers.add_parser(
+        "quickrun",
+        help="Start a local registry and run the complete sync workflow",
+    )
+    quickrun.add_argument(
+        "config",
+        type=Path,
+        nargs="?",
+        default=Path("chartpatch.yaml"),
+        help="YAML config file (default: chartpatch.yaml)",
+    )
+    quickrun.add_argument(
+        "--registry-container",
+        default=DEFAULT_REGISTRY_CONTAINER,
+        help=f"Docker container name (default: {DEFAULT_REGISTRY_CONTAINER})",
+    )
+    quickrun.add_argument(
+        "--registry-image",
+        default=DEFAULT_REGISTRY_IMAGE,
+        help=f"Docker registry image (default: {DEFAULT_REGISTRY_IMAGE})",
+    )
+    quickrun.add_argument(
+        "--registry-timeout",
+        type=float,
+        default=DEFAULT_REGISTRY_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "Seconds to wait for the registry "
+            f"(default: {DEFAULT_REGISTRY_TIMEOUT_SECONDS:g})"
+        ),
+    )
+
     return parser
 
 
@@ -47,11 +90,26 @@ def main(argv: list[str] | None = None) -> int:
         print(render_plan(build_plan(config)), end="")
         return 0
 
-    if args.command == "sync":
+    if args.command in {"sync", "quickrun"}:
         try:
             config = load_config(args.config)
             charts = normalize_chart_entries(config)
-            check_required_binaries()
+            if args.command == "quickrun":
+                check_required_binaries((*REQUIRED_SYNC_BINARIES, "docker"))
+                registry = ensure_local_registry(
+                    config.registry.url,
+                    container_name=args.registry_container,
+                    image=args.registry_image,
+                    timeout_seconds=args.registry_timeout,
+                )
+                state = "started" if registry.started else "already available"
+                print(
+                    f"Local registry {registry.address} is {state} "
+                    f"({registry.container_name}).",
+                    flush=True,
+                )
+            else:
+                check_required_binaries()
             if not config.is_multi_chart:
                 result = run_single_chart_sync(charts[0])
                 print(render_sync_report(result), end="")
@@ -79,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
             if not aggregate.succeeded:
                 return 1
         except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except LocalRegistryError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         except MissingRuntimeDependencies as exc:

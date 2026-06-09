@@ -1,0 +1,23 @@
+From 2b8f9e535dd1ac8e05eae39d8215e16492a29c5d Mon Sep 17 00:00:00 2001
+From: ChartPatch <chartpatch@example.invalid>
+Date: Sun, 24 May 2026 00:00:00 +0000
+Subject: [PATCH] Add chartpatch quickstart annotation
+
+---
+ Chart.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Chart.yaml b/Chart.yaml
+index 2b2f2e7..898be3c 100644
+--- a/Chart.yaml
++++ b/Chart.yaml
+@@ -21,6 +21,7 @@ sources:
+   - https://github.com/kyverno/kyverno
+ kubeVersion: ">=1.25.0-0"
+ annotations:
++  chartpatch.dev/quickstart: "kyverno-patched"
+   artifacthub.io/operator: "false"
+   artifacthub.io/prerelease: "false"
+   artifacthub.io/links: |
+-- 
+2.43.0

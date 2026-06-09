@@ -1,0 +1,16 @@
+registry:
+  url: localhost:5000
+
+chart:
+  name: kyverno
+  source:
+    repo: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    version: 3.8.1
+  patch:
+    file: examples/quickstart/patches/add-quickstart-annotation.patch
+  output:
+    chart_ref: oci://localhost:5000/helm/kyverno
+  verification:
+    helm_lint: true
+    helm_template: true
