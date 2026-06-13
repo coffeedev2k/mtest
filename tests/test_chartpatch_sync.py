@@ -169,12 +169,20 @@ class StubRunner:
         self.archive_chart_dir = archive_chart_dir
         self.calls: list[tuple[str, ...]] = []
         self.cwd_by_call: list[Path | None] = []
+        self.input_by_call: list[str | None] = []
         self.template_call_count = 0
 
-    def run(self, args: list[str], *, cwd: Path | None = None) -> CommandResult:
+    def run(
+        self,
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        input_text: str | None = None,
+    ) -> CommandResult:
         call = tuple(args)
         self.calls.append(call)
         self.cwd_by_call.append(cwd)
+        self.input_by_call.append(input_text)
         if args[:2] == ["helm", "pull"]:
             pulled_chart = PurePosixPath(args[2]).name
             pulled_version = args[args.index("--version") + 1]
@@ -236,6 +244,8 @@ class StubRunner:
             )
         if args[:2] == ["helm", "push"]:
             return self.push_result or CommandResult(call, 0, "pushed\n", "")
+        if args[:3] == ["helm", "registry", "login"]:
+            return CommandResult(call, 0, "Login Succeeded\n", "")
         if args[:2] == ["skopeo", "copy"]:
             if self.skopeo_results:
                 return self.skopeo_results.pop(0)
@@ -409,6 +419,7 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         "push",
         str(result.packaged_chart_path),
         "oci://localhost:5000/helm/kube-prometheus-stack",
+        "--plain-http",
     )
     assert runner.calls[2] == (
         "skopeo",
@@ -432,6 +443,43 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
         ("git", "commit", "-m", "Baseline upstream chart"),
         ("git", "am", "--reject", str(tmp_path / "patches/kube-prometheus-stack.patch")),
     ]
+
+
+def test_sync_authenticates_skopeo_and_helm_without_password_in_args(
+    tmp_path: Path,
+) -> None:
+    raw = {
+        **VALID_CONFIG,
+        "registry": {
+            "url": "localhost:5000",
+            "username": "chartpatch",
+            "password": "secret-password",
+        },
+    }
+    runner = StubRunner(tmp_path)
+
+    result = run_sync(validate_config(raw), repo_root=tmp_path, runner=runner)
+
+    auth_file = result.workspace_path / "registry-auth.json"
+    helm_config = result.workspace_path / "helm-registry-config.json"
+    assert auth_file.is_file()
+    assert auth_file.stat().st_mode & 0o777 == 0o600
+    skopeo_calls = [call for call in runner.calls if call[:2] == ("skopeo", "copy")]
+    assert skopeo_calls
+    assert all(
+        ("--dest-authfile", str(auth_file)) == call[3:5]
+        for call in skopeo_calls
+    )
+    login_index = next(
+        index
+        for index, call in enumerate(runner.calls)
+        if call[:3] == ("helm", "registry", "login")
+    )
+    assert runner.input_by_call[login_index] == "secret-password\n"
+    assert "--registry-config" in runner.calls[login_index]
+    push = next(call for call in runner.calls if call[:2] == ("helm", "push"))
+    assert push[-2:] == ("--registry-config", str(helm_config))
+    assert all("secret-password" not in argument for call in runner.calls for argument in call)
     assert runner.cwd_by_call[4:10] == [result.unpacked_chart_path] * 6
 
     report = render_sync_report(result)
@@ -577,6 +625,7 @@ def test_single_chart_sync_boundary_uses_normalized_chart_fields(tmp_path: Path)
         "push",
         str(result.packaged_chart_path),
         "oci://localhost:5000/helm/custom-chart",
+        "--plain-http",
     )
     assert all(call[:2] != ("helm", "lint") for call in runner.calls)
     assert [call[:2] for call in runner.calls].count(("helm", "template")) == 2
@@ -1284,7 +1333,7 @@ def test_sync_fails_when_patch_application_leaves_artifacts(
     assert expected_message in report
 
 
-def test_sync_fails_when_original_render_contains_no_images(tmp_path: Path) -> None:
+def test_sync_supports_chart_with_no_rendered_images(tmp_path: Path) -> None:
     runner = StubRunner(
         tmp_path,
         template_result=CommandResult(
@@ -1295,16 +1344,15 @@ def test_sync_fails_when_original_render_contains_no_images(tmp_path: Path) -> N
         ),
     )
 
-    with pytest.raises(SyncWorkflowError) as exc_info:
-        run_sync(validate_config(VALID_CONFIG), repo_root=tmp_path, runner=runner)
+    result = run_sync(
+        validate_config(VALID_CONFIG),
+        repo_root=tmp_path,
+        runner=runner,
+    )
 
-    message = str(exc_info.value)
-    assert "image discovery failed" in message
-    assert "no discoverable container images" in message
-    assert [call[:2] for call in runner.calls] == [
-        ("helm", "pull"),
-        ("helm", "template"),
-    ]
+    assert result.discovered_images == ()
+    assert result.image_target_mappings == ()
+    assert result.mirrored_images == ()
 
 
 def test_sync_rewrite_stage_receives_original_image_mapping(

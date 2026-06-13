@@ -1,7 +1,7 @@
 # chartpatch
 
 `chartpatch` is an MVP CLI for syncing pinned upstream Helm charts into a local
-unauthenticated OCI registry. It pulls each chart, renders the original
+OCI registry with optional basic authentication. It pulls each chart, renders the original
 manifests to discover upstream container images, mirrors those images into the
 local registry, applies a reusable Git patch, rewrites chart image references to
 the local registry, verifies the patched chart, packages it, and pushes the
@@ -20,7 +20,7 @@ The supported distribution is a standalone Linux executable. Build it with:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-build.txt
-make binary
+python -m PyInstaller --clean --noconfirm chartpatch.spec
 ./dist/chartpatch --help
 ```
 
@@ -37,25 +37,16 @@ does not require Python or this source tree. It still invokes `helm`, `git`,
 
 ## Quick start
 
-The repository includes a runnable example that adds an annotation to the
-pinned Kyverno chart, mirrors its container images, and publishes the changed
-chart to a local OCI registry.
-
-Build and run the complete example:
+The runnable authenticated `kube-prometheus-stack` example is documented in
+[`quickrun/README.md`](quickrun/README.md). After building the binary, run:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-build.txt
-make quickrun
+./dist/chartpatch quickrun quickrun/config.yaml
 ```
 
-`make quickrun` builds `dist/chartpatch`, starts a persistent Registry v2
-container named `chartpatch-registry`, waits until it is ready, and runs:
-
-```bash
-./dist/chartpatch quickrun chartpatch.yaml
-```
+The Nexus `3.33.0` multi-chart example is documented in
+[`examples/nexus-multi-chart/README.md`](examples/nexus-multi-chart/README.md).
+It provisions Nexus and syncs nine explicitly pinned charts with their images.
 
 For an already-built or installed binary, put a config and its patch file on
 the target system and run:
@@ -64,20 +55,19 @@ the target system and run:
 chartpatch quickrun /path/to/chartpatch.yaml
 ```
 
-With no config argument, `quickrun` reads `./chartpatch.yaml`. It downloads
-Kyverno `3.8.1`, mirrors its images under `localhost:5000`,
-applies the example patch, verifies and packages the changed chart, and pushes
-it to the registry. Confirm that the artifacts are present and inspect the
-published chart metadata:
+With no config argument, `quickrun` reads `./chartpatch.yaml`. The checked-in
+config downloads `kube-prometheus-stack` `70.0.0`, mirrors its images under
+`localhost:5000`, applies the example patch, verifies and packages the changed
+chart, and pushes it to the authenticated registry:
 
 ```bash
-curl -s http://localhost:5000/v2/_catalog | python -m json.tool
-helm show chart oci://localhost:5000/helm/kyverno/kyverno --version 3.8.1
+curl -u chartpatch:chartpatch-local-password \
+  -s http://localhost:5000/v2/_catalog | python -m json.tool
 ```
 
-The Helm output includes the annotation
-`chartpatch.dev/quickstart: kyverno-patched`. To stop the persistent registry
-while keeping its data, run:
+The chart includes
+`chartpatch.dev/quickrun: kube-prometheus-stack-patched`. To stop the
+persistent registry, run:
 
 ```bash
 docker stop chartpatch-registry
@@ -100,33 +90,16 @@ Full local end-to-end validation is opt-in and also requires `kubectl` plus
 
 ## Local registry
 
-For local development, run an unauthenticated Docker Registry v2 on
+For local development, `quickrun` starts an authenticated Docker Registry v2 on
 `localhost:5000`. The same registry stores mirrored container images and patched
-Helm chart OCI artifacts. `quickrun` starts it automatically:
+Helm chart OCI artifacts:
 
 ```bash
 chartpatch quickrun chartpatch.yaml
 ```
 
-The equivalent manual Compose definition remains in
-`examples/quickstart/compose.yaml`.
-
-```yaml
-services:
-  registry:
-    image: registry:2
-    container_name: chartpatch-registry
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
-    environment:
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
-    volumes:
-      - registry-data:/var/lib/registry
-
-volumes:
-  registry-data:
-```
+Credentials come from `registry.username` and `registry.password`. See
+[`quickrun/config.yaml`](quickrun/config.yaml).
 
 ## Config
 
@@ -135,6 +108,8 @@ Use this single-chart config shape for one chart:
 ```yaml
 registry:
   url: localhost:5000
+  username: chartpatch
+  password: chartpatch-local-password
 
 chart:
   name: kube-prometheus-stack
@@ -250,7 +225,8 @@ prints per-chart results, continues to later charts after a chart failure, and
 exits non-zero when any chart fails.
 
 `sync` mutates the configured local registry by pushing mirrored images and the
-patched chart. The MVP assumes the local registry is unauthenticated.
+patched chart. When credentials are configured, Skopeo, Helm, and k3d use the
+same authenticated registry.
 
 ## End-to-end validation
 
@@ -261,9 +237,10 @@ opt-in; to run it, use both the environment gate and marker selection:
 CHARTPATCH_RUN_E2E=1 python -m pytest -q -m e2e tests/test_chartpatch_e2e_kyverno.py
 ```
 
-The test creates a single-server k3d cluster using the pinned
+The test creates a single-server k3d cluster without Traefik using the pinned
 `rancher/k3s:v1.35.5-k3s1` image, configures it to pull from `localhost:5000`,
-installs the latest stable Kyverno chart pinned by the fixture, and applies an
+authenticates to the registry, installs the latest stable Kyverno chart pinned
+by the fixture, and applies an
 enforced `ClusterPolicy` which allows images only from that registry. It then
 verifies that an external image is rejected and that a Deployment using an
 image copied to the local registry becomes available. Any registry, cluster,
@@ -294,8 +271,7 @@ treats a non-zero `git am`, remaining `.rej` files, or an unfinished
 
 ## MVP limitations
 
-- Unauthenticated local registry only.
-- No registry authentication.
+- Basic-auth local registry only; TLS is not configured for the local example.
 - No multiple registries.
 - No automatic patch generation.
 - No automatic patch conflict resolution.

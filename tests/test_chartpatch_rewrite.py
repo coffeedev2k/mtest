@@ -153,6 +153,99 @@ def test_rewrites_structured_registry_and_repository_values(tmp_path: Path) -> N
     assert result.unreplaced_sources == ()
 
 
+def test_rewrites_full_repository_value_when_tag_is_stored_separately(
+    tmp_path: Path,
+) -> None:
+    chart = _write_chart(tmp_path)
+    values = chart / "values.yaml"
+    values.write_text(
+        "image:\n"
+        "  repository: public.ecr.aws/eks/aws-load-balancer-controller\n"
+        "  tag: v3.4.0\n",
+        encoding="utf-8",
+    )
+
+    result = rewrite_chart_images(
+        chart,
+        (
+            ImageTargetMapping(
+                source="public.ecr.aws/eks/aws-load-balancer-controller:v3.4.0",
+                target=(
+                    "localhost:5000/public.ecr.aws/eks/"
+                    "aws-load-balancer-controller:v3.4.0"
+                ),
+            ),
+        ),
+    )
+
+    assert values.read_text(encoding="utf-8") == (
+        "image:\n"
+        "  repository: localhost:5000/public.ecr.aws/eks/"
+        "aws-load-balancer-controller\n"
+        "  tag: v3.4.0\n"
+    )
+    assert result.unreplaced_sources == ()
+
+
+def test_rewrites_docker_hub_repository_shorthand(tmp_path: Path) -> None:
+    chart = _write_chart(tmp_path)
+    values = chart / "values.yaml"
+    values.write_text(
+        "image:\n"
+        "  repository: aquasec/kube-bench\n"
+        "  tag: v0.8.0\n",
+        encoding="utf-8",
+    )
+
+    result = rewrite_chart_images(
+        chart,
+        (
+            ImageTargetMapping(
+                source="aquasec/kube-bench:v0.8.0",
+                target="localhost:5000/docker.io/aquasec/kube-bench:v0.8.0",
+            ),
+        ),
+    )
+
+    assert "repository: localhost:5000/docker.io/aquasec/kube-bench" in (
+        values.read_text(encoding="utf-8")
+    )
+    assert result.unreplaced_sources == ()
+
+
+def test_clears_separate_digest_when_local_target_uses_tag(tmp_path: Path) -> None:
+    chart = _write_chart(tmp_path)
+    values = chart / "values.yaml"
+    values.write_text(
+        "image:\n"
+        "  repository: public.ecr.aws/karpenter/controller\n"
+        "  tag: 1.11.1\n"
+        "  digest: sha256:abcdef\n",
+        encoding="utf-8",
+    )
+
+    result = rewrite_chart_images(
+        chart,
+        (
+            ImageTargetMapping(
+                source=(
+                    "public.ecr.aws/karpenter/controller:"
+                    "1.11.1@sha256:abcdef"
+                ),
+                target=(
+                    "localhost:5000/public.ecr.aws/"
+                    "karpenter/controller:1.11.1"
+                ),
+            ),
+        ),
+    )
+
+    rewritten = values.read_text(encoding="utf-8")
+    assert "repository: localhost:5000/public.ecr.aws/karpenter/controller" in rewritten
+    assert "digest: \n" in rewritten
+    assert result.unreplaced_sources == ()
+
+
 def test_leaves_files_unchanged_when_no_mapped_references_are_present(
     tmp_path: Path,
 ) -> None:

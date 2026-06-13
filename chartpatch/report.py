@@ -21,6 +21,8 @@ def render_plan(plan: Plan) -> str:
                 f"  Source chart version: {entry.source_version}",
                 f"  Configured patch file: {entry.patch_file}",
                 f"  Local registry URL: {entry.registry_url}",
+                "  Registry authentication: "
+                + ("configured" if entry.registry_authenticated else "not configured"),
                 f"  Output OCI chart reference: {entry.output_chart_ref}",
                 "  Verification steps:",
                 f"    helm_lint: {_enabled(entry.helm_lint)}",
@@ -42,6 +44,8 @@ def _render_single_plan(entry: ChartPlanEntry) -> str:
         f"Source chart version: {entry.source_version}",
         f"Configured patch file: {entry.patch_file}",
         f"Local registry URL: {entry.registry_url}",
+        "Registry authentication: "
+        + ("configured" if entry.registry_authenticated else "not configured"),
         f"Output OCI chart reference: {entry.output_chart_ref}",
         "Verification steps:",
         f"  helm_lint: {_enabled(entry.helm_lint)}",

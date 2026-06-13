@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from urllib.request import urlopen
 
 import pytest
@@ -13,6 +16,8 @@ from tests.e2e_support import (
     ClusterHandle,
     ClusterUnavailable,
     E2E_ENV_VAR,
+    REGISTRY_PASSWORD,
+    REGISTRY_USERNAME,
     RegistryUnavailable,
     cleanup_helm_release_and_namespace,
     collect_e2e_prerequisite_skip_reasons,
@@ -57,6 +62,8 @@ def test_kyverno_e2e_fixture_uses_latest_stable_chart_and_local_registry() -> No
     assert config.chart.source.chart == "kyverno"
     assert config.chart.source.version == "3.8.1"
     assert config.registry.url == "localhost:5000"
+    assert config.registry.username == REGISTRY_USERNAME
+    assert config.registry.password == REGISTRY_PASSWORD
     assert is_localhost_5000_oci_ref(config.chart.output.chart_ref)
     assert config.chart.output.chart_ref == "oci://localhost:5000/helm/kyverno"
     assert config.chart.patch.file == (
@@ -102,6 +109,8 @@ def test_chartpatch_plan_kyverno_fixture_reports_latest_stable_inputs() -> None:
         in completed.stdout
     )
     assert "Local registry URL: localhost:5000" in completed.stdout
+    assert "Registry authentication: configured" in completed.stdout
+    assert REGISTRY_PASSWORD not in completed.stdout
     assert "Output OCI chart reference: oci://localhost:5000/helm/kyverno" in completed.stdout
     assert "  helm_lint: enabled" in completed.stdout
     assert "  helm_template: enabled" in completed.stdout
@@ -112,6 +121,7 @@ def _run(
     *,
     timeout: int = 300,
     check: bool = True,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         args,
@@ -120,6 +130,7 @@ def _run(
         capture_output=True,
         timeout=timeout,
         check=False,
+        input=input_text,
     )
     if check and completed.returncode != 0:
         raise AssertionError(
@@ -131,11 +142,26 @@ def _run(
     return completed
 
 
-def _find_installable_chart_ref(chart_ref: str, chart_name: str, version: str) -> str:
+def _find_installable_chart_ref(
+    chart_ref: str,
+    chart_name: str,
+    version: str,
+    registry_config: Path,
+) -> str:
     failures: list[str] = []
     for candidate in oci_chart_ref_candidates(chart_ref, chart_name):
         completed = _run(
-            ["helm", "show", "chart", candidate, "--version", version],
+            [
+                "helm",
+                "show",
+                "chart",
+                candidate,
+                "--version",
+                version,
+                "--plain-http",
+                "--registry-config",
+                str(registry_config),
+            ],
             timeout=120,
             check=False,
         )
@@ -154,7 +180,13 @@ def _cleanup_kyverno_release(namespace: str, release: str) -> None:
     cleanup_helm_release_and_namespace(namespace, release)
 
 
-def _install_kyverno_chart(chart_ref: str, version: str, namespace: str, release: str) -> None:
+def _install_kyverno_chart(
+    chart_ref: str,
+    version: str,
+    namespace: str,
+    release: str,
+    registry_config: Path,
+) -> None:
     _run(
         [
             "helm",
@@ -169,6 +201,9 @@ def _install_kyverno_chart(chart_ref: str, version: str, namespace: str, release
             "--wait",
             "--timeout",
             "10m",
+            "--plain-http",
+            "--registry-config",
+            str(registry_config),
         ],
         timeout=720,
     )
@@ -219,16 +254,57 @@ def _running_kyverno_images(namespace: str) -> tuple[str, ...]:
     return pod_container_images(pods.stdout)
 
 
-def _mirror_test_workload_image() -> None:
+def _mirror_test_workload_image(auth_file: Path) -> None:
     _run(
         [
             "skopeo",
             "copy",
             "--dest-tls-verify=false",
+            "--dest-authfile",
+            str(auth_file),
             f"docker://{TEST_IMAGE_SOURCE}",
             f"docker://{TEST_IMAGE_TARGET}",
         ],
         timeout=300,
+    )
+
+
+def _write_registry_auth_file(
+    path: Path,
+    registry: str,
+    username: str,
+    password: str,
+) -> None:
+    token = base64.b64encode(
+        f"{username}:{password}".encode("utf-8")
+    ).decode("ascii")
+    path.write_text(
+        json.dumps({"auths": {registry: {"auth": token}}}) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+
+def _helm_registry_login(
+    registry: str,
+    username: str,
+    password: str,
+    registry_config: Path,
+) -> None:
+    _run(
+        [
+            "helm",
+            "registry",
+            "login",
+            registry,
+            "--insecure",
+            "--username",
+            username,
+            "--password-stdin",
+            "--registry-config",
+            str(registry_config),
+        ],
+        input_text=f"{password}\n",
     )
 
 
@@ -346,14 +422,33 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
     workload_namespace = "chartpatch-registry-policy-e2e"
     registry = None
     cluster: ClusterHandle | None = None
+    auth_temp_dir = tempfile.TemporaryDirectory(prefix="chartpatch-e2e-auth-")
+    auth_root = Path(auth_temp_dir.name)
+    skopeo_auth_file = auth_root / "auth.json"
+    helm_registry_config = auth_root / "helm-registry.json"
+    assert config.registry.username is not None
+    assert config.registry.password is not None
+    _write_registry_auth_file(
+        skopeo_auth_file,
+        config.registry.url,
+        config.registry.username,
+        config.registry.password,
+    )
     try:
-        registry = ensure_local_registry()
+        registry = ensure_local_registry(
+            username=config.registry.username,
+            password=config.registry.password,
+        )
     except RegistryUnavailable as exc:
         pytest.fail(str(exc))
 
     try:
         try:
-            cluster = ensure_k3d_cluster(registry=config.registry.url)
+            cluster = ensure_k3d_cluster(
+                registry=config.registry.url,
+                username=config.registry.username,
+                password=config.registry.password,
+            )
         except ClusterUnavailable as exc:
             pytest.fail(f"local k3s cluster: {exc}")
 
@@ -384,16 +479,24 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
         assert "Pushed OCI chart reference: oci://localhost:5000/helm/kyverno" in output
         assert "Overall status: success" in output
 
+        _helm_registry_login(
+            config.registry.url,
+            config.registry.username,
+            config.registry.password,
+            helm_registry_config,
+        )
         install_ref = _find_installable_chart_ref(
             config.chart.output.chart_ref,
             config.chart.name,
             config.chart.source.version,
+            helm_registry_config,
         )
         _install_kyverno_chart(
             install_ref,
             config.chart.source.version,
             namespace,
             release,
+            helm_registry_config,
         )
         _wait_for_kyverno_workloads(namespace)
         images = _running_kyverno_images(namespace)
@@ -405,7 +508,7 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
             ", ".join(images)
         )
 
-        _mirror_test_workload_image()
+        _mirror_test_workload_image(skopeo_auth_file)
         _install_local_registry_policy()
         _run(["kubectl", "create", "namespace", workload_namespace])
         _assert_external_registry_is_rejected(workload_namespace)
@@ -417,3 +520,4 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
             delete_k3d_cluster(cluster)
         if registry is not None:
             stop_local_registry(registry)
+        auth_temp_dir.cleanup()

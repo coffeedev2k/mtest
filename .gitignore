@@ -7,3 +7,4 @@ runs/
 dist/
 build/
 *.egg-info/
+examples/nexus-multi-chart/.state/

@@ -229,6 +229,20 @@ def _rewrite_structured_image_values(
         }
         registry_entry = siblings.get("registry")
         default_registry_entry = siblings.get("defaultRegistry")
+        if registry_entry is None and default_registry_entry is None:
+            direct_rewrite = _direct_repository_rewrite(repository, mappings)
+            if direct_rewrite is not None:
+                target_repository, sources = direct_rewrite
+                replacements += _replace_yaml_scalar(lines, index, target_repository)
+                replacements += _clear_retagged_digest(
+                    lines,
+                    siblings,
+                    sources,
+                    mappings,
+                )
+                for source in sources:
+                    replacement_counts[source] += 1
+            continue
         registry = registry_entry[1] if registry_entry is not None else None
         if registry in (None, "", "~"):
             registry = (
@@ -263,10 +277,54 @@ def _rewrite_structured_image_values(
             index,
             target_repository,
         )
+        replacements += _clear_retagged_digest(
+            lines,
+            siblings,
+            sources,
+            mappings,
+        )
         for source in sources:
             replacement_counts[source] += 1
 
     return "".join(lines), replacements
+
+
+def _direct_repository_rewrite(
+    repository: str,
+    mappings: tuple[ImageTargetMapping, ...],
+) -> tuple[str, tuple[str, ...]] | None:
+    matches = [
+        mapping
+        for mapping in mappings
+        if _image_name_without_tag(mapping.source) == repository
+        or (
+            _image_name_without_tag(mapping.source) == f"docker.io/{repository}"
+        )
+    ]
+    if not matches:
+        return None
+    targets = {_image_name_without_tag(mapping.target) for mapping in matches}
+    if len(targets) != 1:
+        return None
+    return next(iter(targets)), tuple(mapping.source for mapping in matches)
+
+
+def _clear_retagged_digest(
+    lines: list[str],
+    siblings: dict[str, tuple[int, object]],
+    sources: tuple[str, ...],
+    mappings: tuple[ImageTargetMapping, ...],
+) -> int:
+    digest_entry = siblings.get("digest")
+    if digest_entry is None:
+        return 0
+    mappings_by_source = {mapping.source: mapping for mapping in mappings}
+    if not any(
+        "@" in source and "@" not in mappings_by_source[source].target
+        for source in sources
+    ):
+        return 0
+    return _replace_yaml_scalar(lines, digest_entry[0], "")
 
 
 def _yaml_image_entries(
@@ -284,7 +342,13 @@ def _yaml_image_entries(
         if not isinstance(value, dict) or len(value) != 1:
             continue
         key, scalar = next(iter(value.items()))
-        if key not in {"registry", "defaultRegistry", "repository"}:
+        if key not in {
+            "registry",
+            "defaultRegistry",
+            "repository",
+            "tag",
+            "digest",
+        }:
             continue
         if scalar is not None and not isinstance(scalar, str):
             continue
@@ -323,15 +387,20 @@ def _replace_yaml_scalar(lines: list[str], index: int, value: str) -> int:
 
 
 def _image_location(reference: str) -> tuple[str, str] | None:
+    name = _image_name_without_tag(reference)
+    registry, separator, repository = name.partition("/")
+    if not separator or not registry or not repository:
+        return None
+    return registry, repository
+
+
+def _image_name_without_tag(reference: str) -> str:
     name = reference.rsplit("@", 1)[0]
     last_slash = name.rfind("/")
     last_colon = name.rfind(":")
     if last_colon > last_slash:
         name = name[:last_colon]
-    registry, separator, repository = name.partition("/")
-    if not separator or not registry or not repository:
-        return None
-    return registry, repository
+    return name
 
 
 def _relative_to(path: Path, root: Path) -> Path:

@@ -7,6 +7,7 @@ from pathlib import Path
 from tests.e2e_support import (
     E2E_ENV_VAR,
     K3S_IMAGE,
+    K3S_DISABLE_TRAEFIK_ARG,
     LOCAL_REGISTRY,
     cleanup_helm_release_and_namespace,
     collect_e2e_prerequisite_skip_reasons,
@@ -140,6 +141,7 @@ def test_local_registry_helpers_target_localhost_5000() -> None:
 
 def test_k3d_registry_config_routes_localhost_registry_to_host_gateway() -> None:
     assert K3S_IMAGE == "rancher/k3s:v1.35.5-k3s1"
+    assert K3S_DISABLE_TRAEFIK_ARG == "--disable=traefik@server:0"
     assert registry_port("localhost:5000") == "5000"
     assert registry_port("registry.example.test") == "5000"
     assert k3d_registry_config("localhost:5000") == (
@@ -147,6 +149,15 @@ def test_k3d_registry_config_routes_localhost_registry_to_host_gateway() -> None
         '  "localhost:5000":\n'
         "    endpoint:\n"
         '      - "http://host.k3d.internal:5000"\n'
+        "configs:\n"
+        '  "localhost:5000":\n'
+        "    auth:\n"
+        '      username: "chartpatch"\n'
+        '      password: "chartpatch-e2e-password"\n'
+        '  "host.k3d.internal:5000":\n'
+        "    auth:\n"
+        '      username: "chartpatch"\n'
+        '      password: "chartpatch-e2e-password"\n'
     )
 
 

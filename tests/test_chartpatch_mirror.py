@@ -95,6 +95,68 @@ def test_mirror_copies_multiple_mappings_in_input_order() -> None:
     )
 
 
+def test_mirror_canonicalizes_source_with_both_tag_and_digest() -> None:
+    runner = RecordingRunner()
+
+    mirror_image_mappings(
+        (
+            ImageTargetMapping(
+                source="public.ecr.aws/team/app:1.2.3@sha256:abcdef",
+                target="localhost:5000/public.ecr.aws/team/app@sha256:abcdef",
+            ),
+        ),
+        runner,
+    )
+
+    assert runner.calls[0][-2:] == (
+        "docker://public.ecr.aws/team/app@sha256:abcdef",
+        "docker://localhost:5000/public.ecr.aws/team/app@sha256:abcdef",
+    )
+
+
+def test_mirror_uses_destination_authfile_without_credentials_in_args() -> None:
+    runner = RecordingRunner()
+
+    mirror_image_mappings(
+        (
+            ImageTargetMapping(
+                source="docker.io/example/app:1.0",
+                target="localhost:5000/docker.io/example/app:1.0",
+            ),
+        ),
+        runner,
+        destination_auth_file="/tmp/registry-auth.json",
+    )
+
+    assert runner.calls[0][2:5] == (
+        "--dest-tls-verify=false",
+        "--dest-authfile",
+        "/tmp/registry-auth.json",
+    )
+
+
+def test_mirror_uses_configured_alternate_source() -> None:
+    runner = RecordingRunner()
+
+    mirror_image_mappings(
+        (
+            ImageTargetMapping(
+                source="appscode/kubed:v0.13.2",
+                target="localhost:5000/docker.io/appscode/kubed:v0.13.2",
+                mirror_source=(
+                    "docker.io/rancher/mirrored-appscode-kubed:v0.13.2"
+                ),
+            ),
+        ),
+        runner,
+    )
+
+    assert runner.calls[0][-2:] == (
+        "docker://docker.io/rancher/mirrored-appscode-kubed:v0.13.2",
+        "docker://localhost:5000/docker.io/appscode/kubed:v0.13.2",
+    )
+
+
 def test_mirror_stops_on_first_failed_copy_and_reports_details() -> None:
     failed = CommandResult(
         (

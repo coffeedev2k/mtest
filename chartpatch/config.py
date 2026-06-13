@@ -41,11 +41,15 @@ class ChartConfig:
     patch: PatchConfig
     output: OutputConfig
     verification: VerificationConfig
+    values: tuple[tuple[str, str], ...] = ()
+    image_overrides: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
 class RegistryConfig:
     url: str
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,10 @@ class NormalizedChartConfig:
     helm_lint: bool
     helm_template: bool
     registry_url: str
+    registry_username: str | None = None
+    registry_password: str | None = None
+    helm_values: tuple[tuple[str, str], ...] = ()
+    image_overrides: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,6 +108,12 @@ def validate_config(raw: Any) -> ChartPatchConfig:
 
     registry = _required_mapping(raw, "registry")
     registry_url = _required_string(registry, "registry.url")
+    registry_username = _optional_string(registry, "username", "registry.username")
+    registry_password = _optional_string(registry, "password", "registry.password")
+    if (registry_username is None) != (registry_password is None):
+        raise ConfigError(
+            "registry.username and registry.password must be configured together"
+        )
 
     has_chart = "chart" in raw
     has_charts = "charts" in raw
@@ -125,7 +139,11 @@ def validate_config(raw: Any) -> ChartPatchConfig:
         _reject_duplicate_output_chart_refs(charts)
 
     return ChartPatchConfig(
-        registry=RegistryConfig(url=registry_url),
+        registry=RegistryConfig(
+            url=registry_url,
+            username=registry_username,
+            password=registry_password,
+        ),
         charts=charts,
         uses_charts_list=has_charts,
     )
@@ -143,6 +161,10 @@ def normalize_chart_entries(config: ChartPatchConfig) -> tuple[NormalizedChartCo
             helm_lint=chart.verification.helm_lint,
             helm_template=chart.verification.helm_template,
             registry_url=config.registry.url,
+            registry_username=config.registry.username,
+            registry_password=config.registry.password,
+            helm_values=chart.values,
+            image_overrides=chart.image_overrides,
         )
         for chart in config.charts
     )
@@ -193,6 +215,12 @@ def _validate_chart_config(chart: dict[str, Any], path: str) -> ChartConfig:
                 f"{path}.verification.helm_template",
             ),
         ),
+        values=_optional_values(chart, path),
+        image_overrides=_optional_string_mapping(
+            chart,
+            "image_overrides",
+            f"{path}.image_overrides",
+        ),
     )
 
 
@@ -223,6 +251,65 @@ def _required_bool(data: dict[str, Any], key: str, path: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{path} must be a boolean")
     return value
+
+
+def _optional_string(
+    data: dict[str, Any],
+    key: str,
+    path: str,
+) -> str | None:
+    if key not in data:
+        return None
+    value = data[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{path} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_values(
+    chart: dict[str, Any],
+    path: str,
+) -> tuple[tuple[str, str], ...]:
+    if "values" not in chart:
+        return ()
+    values = chart["values"]
+    if not isinstance(values, dict):
+        raise ConfigError(f"{path}.values must be a mapping")
+
+    normalized: list[tuple[str, str]] = []
+    for key, value in values.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ConfigError(f"{path}.values keys must be non-empty strings")
+        if not isinstance(value, (str, int, float, bool)):
+            raise ConfigError(
+                f"{path}.values.{key} must be a string, number, or boolean"
+            )
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        else:
+            rendered = str(value)
+        normalized.append((key.strip(), rendered))
+    return tuple(normalized)
+
+
+def _optional_string_mapping(
+    data: dict[str, Any],
+    key: str,
+    path: str,
+) -> tuple[tuple[str, str], ...]:
+    if key not in data:
+        return ()
+    mapping = data[key]
+    if not isinstance(mapping, dict):
+        raise ConfigError(f"{path} must be a mapping")
+    normalized: list[tuple[str, str]] = []
+    for source, replacement in mapping.items():
+        if not isinstance(source, str) or not source.strip():
+            raise ConfigError(f"{path} keys must be non-empty strings")
+        if not isinstance(replacement, str) or not replacement.strip():
+            raise ConfigError(f"{path}.{source} must be a non-empty string")
+        normalized.append((source.strip(), replacement.strip()))
+    return tuple(normalized)
 
 
 def _chart_context(raw: dict[str, Any], index: int) -> str:

@@ -13,6 +13,7 @@ class ChartPlanEntry:
     source_version: str
     patch_file: str
     registry_url: str
+    registry_authenticated: bool
     output_chart_ref: str
     helm_lint: bool
     helm_template: bool
@@ -69,6 +70,7 @@ def build_plan(config: ChartPatchConfig) -> Plan:
                 source_version=chart.source_version,
                 patch_file=chart.patch_file,
                 registry_url=chart.registry_url,
+                registry_authenticated=chart.registry_username is not None,
                 output_chart_ref=chart.output_chart_ref,
                 helm_lint=chart.helm_lint,
                 helm_template=chart.helm_template,

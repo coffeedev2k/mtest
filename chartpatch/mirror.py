@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from .images import ImageTargetMapping
+from .images import ImageTargetMapping, canonicalize_digest_reference
 from .runner import CommandResult, CommandRunner
 
 
@@ -27,11 +27,17 @@ def mirror_image_mappings(
     mappings: Sequence[ImageTargetMapping],
     runner: CommandRunner,
     *,
+    destination_auth_file: str | None = None,
     on_result: MirrorResultCallback | None = None,
 ) -> tuple[MirroredImage, ...]:
     mirrored: list[MirroredImage] = []
     for index, mapping in enumerate(mappings, start=1):
-        result = runner.run(_skopeo_copy_args(mapping))
+        result = runner.run(
+            _skopeo_copy_args(
+                mapping,
+                destination_auth_file=destination_auth_file,
+            )
+        )
         if on_result is not None:
             on_result(index, mapping, result)
         if result.returncode != 0:
@@ -40,14 +46,26 @@ def mirror_image_mappings(
     return tuple(mirrored)
 
 
-def _skopeo_copy_args(mapping: ImageTargetMapping) -> list[str]:
-    return [
+def _skopeo_copy_args(
+    mapping: ImageTargetMapping,
+    *,
+    destination_auth_file: str | None = None,
+) -> list[str]:
+    args = [
         "skopeo",
         "copy",
         "--dest-tls-verify=false",
-        f"docker://{mapping.source}",
-        f"docker://{mapping.target}",
     ]
+    if destination_auth_file is not None:
+        args.extend(["--dest-authfile", destination_auth_file])
+    args.extend(
+        [
+            "docker://"
+            f"{canonicalize_digest_reference(mapping.mirror_source or mapping.source)}",
+            f"docker://{mapping.target}",
+        ]
+    )
+    return args
 
 
 def _format_image_mirror_failure(

@@ -1,0 +1,21 @@
+From 71c36be7af5f058eaeeadf202338bd9b65735929 Mon Sep 17 00:00:00 2001
+From: ChartPatch <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 00:00:00 +0000
+Subject: [PATCH] Add chartpatch quickrun annotation
+
+---
+ Chart.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Chart.yaml b/Chart.yaml
+index f55df83..4a3d5b1 100644
+--- a/Chart.yaml
++++ b/Chart.yaml
+@@ -1,4 +1,5 @@
+ annotations:
++  chartpatch.dev/quickrun: "kube-prometheus-stack-patched"
+   artifacthub.io/license: Apache-2.0
+   artifacthub.io/links: |
+     - name: Chart Source
+-- 
+2.43.0

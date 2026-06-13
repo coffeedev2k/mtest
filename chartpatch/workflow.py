@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+import json
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 import tempfile
 
 from .config import ChartPatchConfig, NormalizedChartConfig, normalize_chart_entries
-from .helm import run_helm_lint, run_helm_package, run_helm_push, run_helm_template
+from .helm import (
+    run_helm_lint,
+    run_helm_package,
+    run_helm_pull,
+    run_helm_push,
+    run_helm_registry_login,
+    run_helm_template,
+)
 from .images import (
     ImageTargetMapping,
     ImageTargetMappingError,
@@ -107,6 +116,8 @@ class SyncWorkspace:
     patched_render_path: Path
     package_output_dir: Path
     logs_dir: Path
+    registry_auth_file: Path
+    helm_registry_config: Path
 
 
 @dataclass(frozen=True)
@@ -275,18 +286,22 @@ def run_single_chart_sync(
     except SyncWorkflowError as exc:
         raise _sync_error(chart, None, STAGE_CHART_PULL, exc.message) from None
 
-    pull_result = command_runner.run(
-        [
-            "helm",
-            "pull",
-            chart.source_chart,
-            "--repo",
-            chart.source_repo,
-            "--version",
-            chart.source_version,
-            "--destination",
-            str(workspace.download_dir),
-        ]
+    destination_auth_file = None
+    if chart.registry_username is not None and chart.registry_password is not None:
+        _write_registry_auth_file(
+            workspace.registry_auth_file,
+            chart.registry_url,
+            chart.registry_username,
+            chart.registry_password,
+        )
+        destination_auth_file = str(workspace.registry_auth_file)
+
+    pull_result = run_helm_pull(
+        command_runner,
+        chart.source_repo,
+        chart.source_chart,
+        chart.source_version,
+        workspace.download_dir,
     )
     _write_command_logs(workspace.logs_dir, "helm-pull", pull_result)
     if pull_result.returncode != 0:
@@ -310,7 +325,12 @@ def run_single_chart_sync(
     except SyncWorkflowError as exc:
         raise _sync_error(chart, workspace, STAGE_CHART_PULL, exc.message) from None
 
-    template_result = run_helm_template(command_runner, chart.chart_name, unpacked_chart)
+    template_result = run_helm_template(
+        command_runner,
+        chart.chart_name,
+        unpacked_chart,
+        chart.helm_values,
+    )
     _write_command_logs(workspace.logs_dir, "helm-template-original", template_result)
     if template_result.returncode != 0:
         raise _sync_error(
@@ -322,7 +342,10 @@ def run_single_chart_sync(
 
     workspace.original_render_path.write_text(template_result.stdout, encoding="utf-8")
     try:
-        discovered_images = discover_manifest_images(template_result.stdout)
+        discovered_images = discover_manifest_images(
+            template_result.stdout,
+            allow_empty=True,
+        )
     except ManifestImageDiscoveryError as exc:
         raise _sync_error(
             chart,
@@ -334,6 +357,7 @@ def run_single_chart_sync(
         image_target_mappings = map_image_targets(
             discovered_images,
             chart.registry_url,
+            image_overrides=chart.image_overrides,
         )
     except ImageTargetMappingError as exc:
         raise _sync_error(
@@ -356,6 +380,7 @@ def run_single_chart_sync(
         mirrored_images = mirror_image_mappings(
             image_target_mappings,
             command_runner,
+            destination_auth_file=destination_auth_file,
             on_result=lambda index, mapping, result: _write_command_logs(
                 workspace.logs_dir,
                 f"skopeo-copy-{index}",
@@ -389,6 +414,7 @@ def run_single_chart_sync(
         command_runner,
         chart.chart_name,
         unpacked_chart,
+        chart.helm_values,
     )
     _write_command_logs(
         workspace.logs_dir,
@@ -411,7 +437,10 @@ def run_single_chart_sync(
         encoding="utf-8",
     )
     try:
-        patched_images = discover_manifest_images(patched_template_result.stdout)
+        patched_images = discover_manifest_images(
+            patched_template_result.stdout,
+            allow_empty=True,
+        )
     except ManifestImageDiscoveryError as exc:
         raise _sync_error(
             chart,
@@ -436,7 +465,11 @@ def run_single_chart_sync(
 
     final_helm_lint_verified = False
     if chart.helm_lint:
-        lint_result = run_helm_lint(command_runner, unpacked_chart)
+        lint_result = run_helm_lint(
+            command_runner,
+            unpacked_chart,
+            chart.helm_values,
+        )
         _write_command_logs(workspace.logs_dir, "helm-lint-final", lint_result)
         if lint_result.returncode != 0:
             raise _sync_error(
@@ -456,6 +489,7 @@ def run_single_chart_sync(
             command_runner,
             chart.chart_name,
             unpacked_chart,
+            chart.helm_values,
         )
         _write_command_logs(
             workspace.logs_dir,
@@ -505,10 +539,38 @@ def run_single_chart_sync(
         raise _sync_error(chart, workspace, STAGE_PACKAGE, exc.message) from None
 
     try:
+        if chart.registry_username is not None and chart.registry_password is not None:
+            login_result = run_helm_registry_login(
+                command_runner,
+                chart.registry_url,
+                chart.registry_username,
+                chart.registry_password,
+                workspace.helm_registry_config,
+            )
+            _write_command_logs(
+                workspace.logs_dir,
+                "helm-registry-login",
+                login_result,
+            )
+            if login_result.returncode != 0:
+                raise _sync_error(
+                    chart,
+                    workspace,
+                    STAGE_OCI_PUSH,
+                    _format_command_failure(
+                        "helm registry login failed",
+                        login_result,
+                    ),
+                )
         push_result = run_helm_push(
             command_runner,
             packaged_chart,
             chart.output_chart_ref,
+            registry_config=(
+                workspace.helm_registry_config
+                if chart.registry_username is not None
+                else None
+            ),
         )
     except ValueError as exc:
         raise _sync_error(chart, workspace, STAGE_OCI_PUSH, str(exc)) from None
@@ -578,7 +640,23 @@ def create_sync_workspace(
         patched_render_path=render_dir / "patched.yaml",
         package_output_dir=package_output_dir,
         logs_dir=logs_dir,
+        registry_auth_file=root / "registry-auth.json",
+        helm_registry_config=root / "helm-registry-config.json",
     )
+
+
+def _write_registry_auth_file(
+    path: Path,
+    registry: str,
+    username: str,
+    password: str,
+) -> None:
+    encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    path.write_text(
+        json.dumps({"auths": {registry: {"auth": encoded}}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
 
 
 def render_sync_report(

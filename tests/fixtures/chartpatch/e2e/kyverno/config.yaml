@@ -1,5 +1,7 @@
 registry:
   url: localhost:5000
+  username: chartpatch
+  password: chartpatch-e2e-password
 
 chart:
   name: kyverno

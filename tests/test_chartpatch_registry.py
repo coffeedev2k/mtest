@@ -25,7 +25,7 @@ def result(args: Sequence[str], returncode: int = 0) -> CommandResult:
 
 def test_reuses_reachable_registry_without_docker(monkeypatch) -> None:
     runner = RecordingRunner(())
-    monkeypatch.setattr(registry, "_registry_is_ready", lambda url: True)
+    monkeypatch.setattr(registry, "_registry_is_ready", lambda url, **kwargs: True)
 
     local = ensure_local_registry("localhost:5000", runner=runner)
 
@@ -39,7 +39,7 @@ def test_starts_existing_registry_container(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "_registry_is_ready",
-        lambda url: next(readiness),
+        lambda url, **kwargs: next(readiness),
     )
     runner = RecordingRunner(
         (
@@ -62,7 +62,7 @@ def test_runs_new_registry_container_on_configured_port(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "_registry_is_ready",
-        lambda url: next(readiness),
+        lambda url, **kwargs: next(readiness),
     )
     runner = RecordingRunner(
         (
@@ -108,3 +108,44 @@ def test_runs_new_registry_container_on_configured_port(monkeypatch) -> None:
 def test_rejects_non_local_or_invalid_registry_addresses(address: str) -> None:
     with pytest.raises(LocalRegistryError):
         ensure_local_registry(address)
+
+
+def test_authenticated_registry_generates_htpasswd_and_mounts_it(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    readiness = iter((False, True))
+    monkeypatch.setattr(
+        registry,
+        "_registry_is_ready",
+        lambda url, **kwargs: next(readiness),
+    )
+    runner = RecordingRunner(
+        (
+            result(("docker", "rm", "-f", "secured")),
+            CommandResult(
+                ("docker", "run", "htpasswd"),
+                0,
+                "chartpatch:$2y$05$hash\n",
+                "",
+            ),
+            result(("docker", "run")),
+        )
+    )
+
+    local = ensure_local_registry(
+        "localhost:5000",
+        container_name="secured",
+        username="chartpatch",
+        password="secret-password",
+        auth_dir=tmp_path,
+        runner=runner,
+    )
+
+    assert local.started is True
+    assert (tmp_path / "htpasswd").read_text(encoding="utf-8").startswith(
+        "chartpatch:$2y$"
+    )
+    assert "secret-password" not in " ".join(runner.calls[1])
+    assert "REGISTRY_AUTH=htpasswd" in runner.calls[2]
+    assert f"{tmp_path}:/auth:ro" in runner.calls[2]

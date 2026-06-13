@@ -76,6 +76,39 @@ def test_legacy_top_level_chart_config_remains_single_chart() -> None:
     assert config.chart.name == "kube-prometheus-stack"
 
 
+def test_registry_credentials_are_normalized_without_exposing_them_in_url() -> None:
+    raw = _copy(VALID_CONFIG)
+    raw["registry"]["username"] = "chartpatch"
+    raw["registry"]["password"] = "secret-password"
+
+    config = validate_config(raw)
+    entry = normalize_chart_entries(config)[0]
+
+    assert config.registry.username == "chartpatch"
+    assert config.registry.password == "secret-password"
+    assert entry.registry_username == "chartpatch"
+    assert entry.registry_password == "secret-password"
+    assert entry.registry_url == "localhost:5000"
+
+
+@pytest.mark.parametrize(
+    "registry",
+    (
+        {"url": "localhost:5000", "username": "chartpatch"},
+        {"url": "localhost:5000", "password": "secret-password"},
+    ),
+)
+def test_registry_credentials_must_be_configured_together(registry) -> None:
+    raw = _copy(VALID_CONFIG)
+    raw["registry"] = registry
+
+    with pytest.raises(
+        ConfigError,
+        match="registry.username and registry.password must be configured together",
+    ):
+        validate_config(raw)
+
+
 def test_top_level_charts_config_parses_multiple_entries_in_order() -> None:
     config = validate_config(MULTI_CHART_CONFIG)
 

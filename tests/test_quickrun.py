@@ -10,33 +10,37 @@ from chartpatch.config import load_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-QUICKSTART_CONFIG = REPO_ROOT / "examples/quickstart/kyverno.yaml"
-QUICKSTART_PATCH = (
-    REPO_ROOT / "examples/quickstart/patches/add-quickstart-annotation.patch"
+QUICKRUN_CONFIG = REPO_ROOT / "quickrun/config.yaml"
+QUICKRUN_PATCH = (
+    REPO_ROOT / "quickrun/patches/add-quickrun-annotation.patch"
 )
 BASE_CONFIG = REPO_ROOT / "chartpatch.yaml"
 
 
-def test_quickstart_example_is_runnable_and_targets_local_registry() -> None:
-    config = load_config(QUICKSTART_CONFIG)
+def test_quickrun_example_is_runnable_and_targets_local_registry() -> None:
+    config = load_config(QUICKRUN_CONFIG)
 
     assert config.registry.url == "localhost:5000"
-    assert config.chart.name == "kyverno"
-    assert config.chart.source.version == "3.8.1"
+    assert config.registry.username == "chartpatch"
+    assert config.registry.password == "chartpatch-local-password"
+    assert config.chart.name == "kube-prometheus-stack"
+    assert config.chart.source.version == "70.0.0"
     assert config.chart.patch.file == (
-        "examples/quickstart/patches/add-quickstart-annotation.patch"
+        "quickrun/patches/add-quickrun-annotation.patch"
     )
-    assert config.chart.output.chart_ref == "oci://localhost:5000/helm/kyverno"
-    assert QUICKSTART_PATCH.is_file()
+    assert config.chart.output.chart_ref == (
+        "oci://localhost:5000/helm/kube-prometheus-stack"
+    )
+    assert QUICKRUN_PATCH.is_file()
     assert (
-        'chartpatch.dev/quickstart: "kyverno-patched"'
-        in QUICKSTART_PATCH.read_text(encoding="utf-8")
+        'chartpatch.dev/quickrun: "kube-prometheus-stack-patched"'
+        in QUICKRUN_PATCH.read_text(encoding="utf-8")
     )
 
 
-def test_quickstart_plan_succeeds() -> None:
+def test_quickrun_plan_succeeds() -> None:
     completed = subprocess.run(
-        [sys.executable, "-m", "chartpatch", "plan", str(QUICKSTART_CONFIG)],
+        [sys.executable, "-m", "chartpatch", "plan", str(QUICKRUN_CONFIG)],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -45,22 +49,24 @@ def test_quickstart_plan_succeeds() -> None:
 
     assert completed.returncode == 0
     assert completed.stderr == ""
-    assert "Source chart name: kyverno" in completed.stdout
-    assert "Source chart version: 3.8.1" in completed.stdout
+    assert "Source chart name: kube-prometheus-stack" in completed.stdout
+    assert "Source chart version: 70.0.0" in completed.stdout
     assert "Local registry URL: localhost:5000" in completed.stdout
+    assert "Registry authentication: configured" in completed.stdout
     assert (
-        "Output OCI chart reference: oci://localhost:5000/helm/kyverno"
+        "Output OCI chart reference: "
+        "oci://localhost:5000/helm/kube-prometheus-stack"
         in completed.stdout
     )
 
 
-def test_base_config_matches_quickstart() -> None:
+def test_base_config_matches_quickrun() -> None:
     config = load_config(BASE_CONFIG)
 
     assert config.registry.url == "localhost:5000"
-    assert config.chart.name == "kyverno"
+    assert config.chart.name == "kube-prometheus-stack"
     assert config.chart.patch.file == (
-        "examples/quickstart/patches/add-quickstart-annotation.patch"
+        "quickrun/patches/add-quickrun-annotation.patch"
     )
 
 
@@ -92,6 +98,6 @@ def test_quickrun_starts_registry_before_sync(monkeypatch, capsys) -> None:
     assert events == [
         ("dependencies", ("helm", "git", "skopeo", "docker")),
         ("registry", "localhost:5000"),
-        ("sync", "kyverno"),
+        ("sync", "kube-prometheus-stack"),
     ]
     assert "Local registry localhost:5000 is started" in capsys.readouterr().out

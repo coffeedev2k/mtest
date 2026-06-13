@@ -101,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
                     container_name=args.registry_container,
                     image=args.registry_image,
                     timeout_seconds=args.registry_timeout,
+                    username=config.registry.username,
+                    password=config.registry.password,
                 )
                 state = "started" if registry.started else "already available"
                 print(

@@ -1,2 +1,3 @@
+# Install and invoke tools directly. This project intentionally does not use Make.
 PyInstaller>=6.0,<7
 PyYAML>=6.0

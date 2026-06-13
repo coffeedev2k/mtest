@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,8 @@ class CommandRunner:
         *,
         cwd: Path | None = None,
         check: bool = False,
+        input_text: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         completed = subprocess.run(
             list(args),
@@ -36,6 +38,8 @@ class CommandRunner:
             text=True,
             capture_output=True,
             check=False,
+            input=input_text,
+            env=env,
         )
         result = CommandResult(
             args=tuple(str(arg) for arg in args),

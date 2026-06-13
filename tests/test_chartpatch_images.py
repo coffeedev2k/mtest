@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from chartpatch.images import (
+    canonicalize_digest_reference,
     ImageTargetMapping,
     ImageTargetMappingError,
     ManifestImageDiscoveryError,
@@ -191,6 +192,23 @@ data:
     assert "no discoverable container images" in str(exc_info.value)
 
 
+def test_allows_rendered_charts_without_container_images_when_requested() -> None:
+    rendered = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: settings\n"
+
+    assert discover_manifest_images(rendered, allow_empty=True) == ()
+
+
+def test_canonicalizes_tag_and_digest_reference_for_registry_tools() -> None:
+    reference = "public.ecr.aws/team/controller:1.2.3@sha256:abcdef"
+
+    assert canonicalize_digest_reference(reference) == (
+        "public.ecr.aws/team/controller@sha256:abcdef"
+    )
+    assert normalize_image_reference(reference) == (
+        "public.ecr.aws/team/controller:1.2.3"
+    )
+
+
 def test_ignores_empty_yaml_documents_and_documents_without_pod_specs() -> None:
     rendered = """
 ---
@@ -245,7 +263,7 @@ def test_maps_image_targets_preserves_tags_and_digests() -> None:
             source="registry.example.com/app@sha256:0123456789abcdef",
             target=(
                 "localhost:5000/"
-                "registry.example.com/app@sha256:0123456789abcdef"
+                "registry.example.com/app:sha256-0123456789abcdef"
             ),
         ),
         ImageTargetMapping(
@@ -283,6 +301,25 @@ def test_maps_image_targets_handles_trailing_registry_slash() -> None:
         ImageTargetMapping(
             source="docker.io/bitnami/nginx:1.27.4",
             target="localhost:5000/docker.io/bitnami/nginx:1.27.4",
+        ),
+    )
+
+
+def test_maps_image_target_with_alternate_mirror_source() -> None:
+    assert map_image_targets(
+        ("appscode/kubed:v0.13.2",),
+        "localhost:5000",
+        image_overrides=(
+            (
+                "appscode/kubed:v0.13.2",
+                "docker.io/rancher/mirrored-appscode-kubed:v0.13.2",
+            ),
+        ),
+    ) == (
+        ImageTargetMapping(
+            source="appscode/kubed:v0.13.2",
+            target="localhost:5000/docker.io/appscode/kubed:v0.13.2",
+            mirror_source="docker.io/rancher/mirrored-appscode-kubed:v0.13.2",
         ),
     )
 

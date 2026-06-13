@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import base64
 import json
 import os
 import shutil
@@ -9,15 +10,19 @@ import subprocess
 import tempfile
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 E2E_ENV_VAR = "CHARTPATCH_RUN_E2E"
 LOCAL_REGISTRY = "localhost:5000"
 REGISTRY_CONTAINER_NAME = "chartpatch-e2e-registry"
 REGISTRY_IMAGE = "registry:2"
+REGISTRY_HTPASSWD_IMAGE = "httpd:2.4-alpine"
+REGISTRY_USERNAME = "chartpatch"
+REGISTRY_PASSWORD = "chartpatch-e2e-password"
 K3D_CLUSTER_NAME = "chartpatch-e2e"
 K3S_IMAGE = "rancher/k3s:v1.35.5-k3s1"
+K3S_DISABLE_TRAEFIK_ARG = "--disable=traefik@server:0"
 REQUIRED_E2E_TOOLS = ("helm", "git", "skopeo", "kubectl", "k3d")
 CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
 REQUIRED_NETWORK_ENDPOINTS = (
@@ -33,6 +38,7 @@ class RegistryHandle:
     started: bool
     runtime: str | None = None
     container_name: str | None = None
+    auth_dir: str | None = None
 
 
 class RegistryUnavailable(RuntimeError):
@@ -237,9 +243,21 @@ def is_localhost_5000_oci_ref(chart_ref: str) -> bool:
     return chart_ref.startswith(f"oci://{LOCAL_REGISTRY}/")
 
 
-def registry_is_reachable(registry: str = LOCAL_REGISTRY, *, timeout: float = 1.0) -> bool:
+def registry_is_reachable(
+    registry: str = LOCAL_REGISTRY,
+    *,
+    username: str | None = None,
+    password: str | None = None,
+    timeout: float = 1.0,
+) -> bool:
+    request = Request(registry_api_url(registry))
+    if username is not None and password is not None:
+        token = base64.b64encode(
+            f"{username}:{password}".encode("utf-8")
+        ).decode("ascii")
+        request.add_header("Authorization", f"Basic {token}")
     try:
-        with urlopen(registry_api_url(registry), timeout=timeout) as response:
+        with urlopen(request, timeout=timeout) as response:
             return 200 <= response.status < 500
     except (OSError, URLError):
         return False
@@ -248,10 +266,16 @@ def registry_is_reachable(registry: str = LOCAL_REGISTRY, *, timeout: float = 1.
 def ensure_local_registry(
     *,
     registry: str = LOCAL_REGISTRY,
+    username: str = REGISTRY_USERNAME,
+    password: str = REGISTRY_PASSWORD,
     runtime: str | None = None,
     timeout_seconds: float = 30.0,
 ) -> RegistryHandle:
-    if registry_is_reachable(registry):
+    if registry_is_reachable(
+        registry,
+        username=username,
+        password=password,
+    ):
         return RegistryHandle(url=registry, started=False)
 
     selected_runtime = runtime or first_available_runtime()
@@ -259,6 +283,34 @@ def ensure_local_registry(
         raise RegistryUnavailable(
             f"{registry} is not reachable and no compatible container runtime was found"
         )
+
+    auth_dir = tempfile.mkdtemp(prefix="chartpatch-registry-auth-")
+    htpasswd = subprocess.run(
+        [
+            selected_runtime,
+            "run",
+            "--rm",
+            "-i",
+            REGISTRY_HTPASSWD_IMAGE,
+            "htpasswd",
+            "-Bni",
+            username,
+        ],
+        input=f"{password}\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if htpasswd.returncode != 0 or not htpasswd.stdout.strip():
+        shutil.rmtree(auth_dir, ignore_errors=True)
+        raise RegistryUnavailable(
+            "local registry: failed to generate htpasswd entry: "
+            f"{htpasswd.stderr.strip() or htpasswd.stdout.strip()}"
+        )
+    auth_file = os.path.join(auth_dir, "htpasswd")
+    with open(auth_file, "w", encoding="utf-8") as file:
+        file.write(htpasswd.stdout)
+    os.chmod(auth_file, 0o600)
 
     command = [
         selected_runtime,
@@ -269,6 +321,14 @@ def ensure_local_registry(
         "5000:5000",
         "--name",
         REGISTRY_CONTAINER_NAME,
+        "-e",
+        "REGISTRY_AUTH=htpasswd",
+        "-e",
+        "REGISTRY_AUTH_HTPASSWD_REALM=ChartPatch E2E Registry",
+        "-e",
+        "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd",
+        "-v",
+        f"{auth_dir}:/auth:ro",
         REGISTRY_IMAGE,
     ]
     subprocess.run(
@@ -295,12 +355,17 @@ def ensure_local_registry(
 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if registry_is_reachable(registry):
+        if registry_is_reachable(
+            registry,
+            username=username,
+            password=password,
+        ):
             return RegistryHandle(
                 url=registry,
                 started=True,
                 runtime=selected_runtime,
                 container_name=REGISTRY_CONTAINER_NAME,
+                auth_dir=auth_dir,
             )
         time.sleep(0.5)
 
@@ -310,6 +375,7 @@ def ensure_local_registry(
         capture_output=True,
         check=False,
     )
+    shutil.rmtree(auth_dir, ignore_errors=True)
     raise RegistryUnavailable(f"local registry: {registry} did not become reachable")
 
 
@@ -322,14 +388,31 @@ def stop_local_registry(handle: RegistryHandle) -> None:
         capture_output=True,
         check=False,
     )
+    if handle.auth_dir is not None:
+        shutil.rmtree(handle.auth_dir, ignore_errors=True)
 
 
-def k3d_registry_config(registry: str = LOCAL_REGISTRY) -> str:
+def k3d_registry_config(
+    registry: str = LOCAL_REGISTRY,
+    *,
+    username: str = REGISTRY_USERNAME,
+    password: str = REGISTRY_PASSWORD,
+) -> str:
+    mirror = f"host.k3d.internal:{registry_port(registry)}"
     return (
         "mirrors:\n"
         f'  "{registry}":\n'
         "    endpoint:\n"
-        f'      - "http://host.k3d.internal:{registry_port(registry)}"\n'
+        f'      - "http://{mirror}"\n'
+        "configs:\n"
+        f'  "{registry}":\n'
+        "    auth:\n"
+        f'      username: "{username}"\n'
+        f'      password: "{password}"\n'
+        f'  "{mirror}":\n'
+        "    auth:\n"
+        f'      username: "{username}"\n'
+        f'      password: "{password}"\n'
     )
 
 
@@ -362,6 +445,8 @@ def ensure_k3d_cluster(
     *,
     name: str = K3D_CLUSTER_NAME,
     registry: str = LOCAL_REGISTRY,
+    username: str = REGISTRY_USERNAME,
+    password: str = REGISTRY_PASSWORD,
     timeout_seconds: int = 180,
 ) -> ClusterHandle:
     if k3d_cluster_exists(name):
@@ -382,7 +467,13 @@ def ensure_k3d_cluster(
     with tempfile.TemporaryDirectory(prefix="chartpatch-k3d-") as temp_dir:
         registry_config = os.path.join(temp_dir, "registries.yaml")
         with open(registry_config, "w", encoding="utf-8") as file:
-            file.write(k3d_registry_config(registry))
+            file.write(
+                k3d_registry_config(
+                    registry,
+                    username=username,
+                    password=password,
+                )
+            )
 
         completed = subprocess.run(
             [
@@ -393,6 +484,8 @@ def ensure_k3d_cluster(
                 "--image",
                 K3S_IMAGE,
                 "--no-lb",
+                "--k3s-arg",
+                K3S_DISABLE_TRAEFIK_ARG,
                 "--registry-config",
                 registry_config,
                 "--wait",

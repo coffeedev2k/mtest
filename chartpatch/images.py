@@ -18,11 +18,14 @@ class ImageTargetMappingError(ValueError):
 class ImageTargetMapping:
     source: str
     target: str
+    mirror_source: str | None = None
 
 
 def map_image_targets(
     source_images: tuple[str, ...],
     registry_url: str,
+    *,
+    image_overrides: tuple[tuple[str, str], ...] = (),
 ) -> tuple[ImageTargetMapping, ...]:
     """Map source image references to deterministic local-registry targets."""
     registry_prefix = registry_url.rstrip("/")
@@ -30,10 +33,18 @@ def map_image_targets(
         raise ImageTargetMappingError("registry URL must not be empty")
 
     unique_sources = tuple(sorted(set(source_images)))
+    overrides = dict(image_overrides)
+    unknown_overrides = tuple(sorted(set(overrides) - set(unique_sources)))
+    if unknown_overrides:
+        raise ImageTargetMappingError(
+            "image overrides do not match rendered images: "
+            + ", ".join(unknown_overrides)
+        )
     mappings = tuple(
         ImageTargetMapping(
             source=source,
             target=f"{registry_prefix}/{normalize_image_reference(source)}",
+            mirror_source=overrides.get(source),
         )
         for source in unique_sources
     )
@@ -46,7 +57,7 @@ def map_image_targets(
 
 def normalize_image_reference(image_reference: str) -> str:
     """Return a deterministic image reference suffix for local registry targets."""
-    reference = image_reference.strip()
+    reference = local_target_reference(image_reference.strip())
     if not reference:
         raise ImageTargetMappingError("image reference must not be empty")
 
@@ -67,7 +78,37 @@ def normalize_image_reference(image_reference: str) -> str:
     return f"{registry}/{repository}"
 
 
-def discover_manifest_images(rendered_manifests: str) -> tuple[str, ...]:
+def canonicalize_digest_reference(image_reference: str) -> str:
+    """Remove a tag when an immutable digest is already present."""
+    if "@" not in image_reference:
+        return image_reference
+    name, digest = image_reference.rsplit("@", 1)
+    last_slash = name.rfind("/")
+    last_colon = name.rfind(":")
+    if last_colon > last_slash:
+        name = name[:last_colon]
+    return f"{name}@{digest}"
+
+
+def local_target_reference(image_reference: str) -> str:
+    """Convert a digest reference into a tag suitable for a mirror destination."""
+    if "@" not in image_reference:
+        return image_reference
+    name, digest = image_reference.rsplit("@", 1)
+    last_slash = name.rfind("/")
+    last_colon = name.rfind(":")
+    if last_colon > last_slash:
+        return name
+    algorithm, separator, value = digest.partition(":")
+    digest_tag = f"{algorithm}-{value[:16]}" if separator else digest[:24]
+    return f"{name}:{digest_tag}"
+
+
+def discover_manifest_images(
+    rendered_manifests: str,
+    *,
+    allow_empty: bool = False,
+) -> tuple[str, ...]:
     """Return unique container image references from rendered Kubernetes YAML."""
     try:
         documents = yaml.safe_load_all(rendered_manifests)
@@ -81,7 +122,7 @@ def discover_manifest_images(rendered_manifests: str) -> tuple[str, ...]:
             f"invalid rendered manifest YAML: {exc}"
         ) from None
 
-    if not images:
+    if not images and not allow_empty:
         raise ManifestImageDiscoveryError(
             "rendered manifests contain no discoverable container images"
         )

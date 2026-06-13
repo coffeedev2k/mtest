@@ -14,7 +14,9 @@ The next version may support several chart entries in the same config.
 
 ## Local Registry
 
-For local development, the system uses an unauthenticated Docker Registry v2 instance:
+For local development, the system uses an authenticated Docker Registry v2
+instance. The implementation uses direct standard commands and does not require
+Make.
 
 ```yaml
 services:
@@ -25,6 +27,9 @@ services:
       - "5000:5000"
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: ChartPatch Registry
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
     volumes:
       - registry-data:/var/lib/registry
 
@@ -42,6 +47,8 @@ The local registry stores both:
 ```yaml
 registry:
   url: localhost:5000
+  username: chartpatch
+  password: chartpatch-local-password
 
 chart:
   name: kube-prometheus-stack
@@ -124,7 +131,7 @@ helm install kyverno kyverno/kyverno -n kyverno --create-namespace
 
 The automated E2E flow should:
 
-1. Start a local unauthenticated OCI registry.
+1. Start a local authenticated OCI registry.
 2. Start or reuse a local `k3s` cluster configured to pull from that registry.
 3. Download a pinned Kyverno chart version.
 4. Render the original chart.
@@ -199,7 +206,6 @@ It should:
 ## Out Of Scope For MVP
 
 - GitHub PR automation
-- registry authentication
 - multiple registries
 - complex patch conflict resolution
 - automatic patch generation
