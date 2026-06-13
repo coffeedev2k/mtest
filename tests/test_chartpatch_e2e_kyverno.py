@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import sys
+from urllib.request import urlopen
 
 import pytest
+import yaml
 
 from chartpatch.config import load_config
 from tests.e2e_support import (
@@ -32,9 +34,23 @@ KYVERNO_PATCH = (
     REPO_ROOT
     / "tests/fixtures/chartpatch/e2e/kyverno/patches/add-fixture-annotation.patch"
 )
+LOCAL_REGISTRY_POLICY = (
+    REPO_ROOT / "tests/fixtures/chartpatch/e2e/kyverno/allow-local-registry.yaml"
+)
+LOCAL_REGISTRY_DEPLOYMENT = (
+    REPO_ROOT
+    / "tests/fixtures/chartpatch/e2e/kyverno/local-registry-deployment.yaml"
+)
+EXTERNAL_REGISTRY_POD = (
+    REPO_ROOT / "tests/fixtures/chartpatch/e2e/kyverno/external-registry-pod.yaml"
+)
+POLICY_NAME = "allow-local-registry-only"
+TEST_IMAGE_SOURCE = "registry.k8s.io/pause:3.10"
+TEST_IMAGE_TARGET = "localhost:5000/chartpatch-e2e/pause:3.10"
+KYVERNO_CHART_INDEX = "https://kyverno.github.io/kyverno/index.yaml"
 
 
-def test_kyverno_e2e_fixture_is_pinned_and_targets_local_registry() -> None:
+def test_kyverno_e2e_fixture_uses_latest_stable_chart_and_local_registry() -> None:
     config = load_config(KYVERNO_FIXTURE)
 
     assert config.chart.source.repo == "https://kyverno.github.io/kyverno/"
@@ -54,7 +70,19 @@ def test_kyverno_e2e_fixture_is_pinned_and_targets_local_registry() -> None:
     assert 'chartpatch.dev/fixture: "kyverno-e2e-pinned"' in patch_text
 
 
-def test_chartpatch_plan_kyverno_fixture_reports_pinned_inputs() -> None:
+def test_local_registry_policy_and_workloads_exercise_both_admission_paths() -> None:
+    policy = LOCAL_REGISTRY_POLICY.read_text(encoding="utf-8")
+    allowed = LOCAL_REGISTRY_DEPLOYMENT.read_text(encoding="utf-8")
+    forbidden = EXTERNAL_REGISTRY_POD.read_text(encoding="utf-8")
+
+    assert "failureAction: Enforce" in policy
+    assert "kind: ClusterPolicy" in policy
+    assert "image: \"localhost:5000/*\"" in policy
+    assert f"image: {TEST_IMAGE_TARGET}" in allowed
+    assert f"image: {TEST_IMAGE_SOURCE}" in forbidden
+
+
+def test_chartpatch_plan_kyverno_fixture_reports_latest_stable_inputs() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "chartpatch", "plan", str(KYVERNO_FIXTURE)],
         cwd=REPO_ROOT,
@@ -191,6 +219,114 @@ def _running_kyverno_images(namespace: str) -> tuple[str, ...]:
     return pod_container_images(pods.stdout)
 
 
+def _mirror_test_workload_image() -> None:
+    _run(
+        [
+            "skopeo",
+            "copy",
+            "--dest-tls-verify=false",
+            f"docker://{TEST_IMAGE_SOURCE}",
+            f"docker://{TEST_IMAGE_TARGET}",
+        ],
+        timeout=300,
+    )
+
+
+def _latest_stable_kyverno_chart_version() -> str:
+    with urlopen(KYVERNO_CHART_INDEX, timeout=30) as response:
+        index = yaml.safe_load(response)
+    for chart in index["entries"]["kyverno"]:
+        version = str(chart["version"])
+        if "-" not in version:
+            return version
+    raise AssertionError("official Kyverno chart index contains no stable release")
+
+
+def _install_local_registry_policy() -> None:
+    _run(["kubectl", "apply", "--filename", str(LOCAL_REGISTRY_POLICY)])
+    _run(
+        [
+            "kubectl",
+            "wait",
+            "--for=condition=Ready",
+            f"clusterpolicy/{POLICY_NAME}",
+            "--timeout=120s",
+        ],
+        timeout=180,
+    )
+
+
+def _cleanup_policy_workload(namespace: str) -> None:
+    _run(
+        [
+            "kubectl",
+            "delete",
+            "clusterpolicy",
+            POLICY_NAME,
+            "--ignore-not-found=true",
+        ],
+        check=False,
+    )
+    _run(
+        [
+            "kubectl",
+            "delete",
+            "namespace",
+            namespace,
+            "--ignore-not-found=true",
+            "--wait=true",
+        ],
+        timeout=180,
+        check=False,
+    )
+
+
+def _assert_external_registry_is_rejected(namespace: str) -> None:
+    completed = _run(
+        [
+            "kubectl",
+            "apply",
+            "--namespace",
+            namespace,
+            "--filename",
+            str(EXTERNAL_REGISTRY_POD),
+        ],
+        check=False,
+    )
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0, (
+        "Kyverno unexpectedly admitted a Pod using an external registry\n"
+        f"stdout:\n{completed.stdout}\n"
+        f"stderr:\n{completed.stderr}"
+    )
+    assert POLICY_NAME in output
+
+
+def _deploy_from_local_registry(namespace: str) -> None:
+    _run(
+        [
+            "kubectl",
+            "apply",
+            "--namespace",
+            namespace,
+            "--filename",
+            str(LOCAL_REGISTRY_DEPLOYMENT),
+        ]
+    )
+    _run(
+        [
+            "kubectl",
+            "rollout",
+            "status",
+            "deployment/local-registry-smoke",
+            "--namespace",
+            namespace,
+            "--timeout=180s",
+        ],
+        timeout=240,
+    )
+
+
 @pytest.mark.e2e
 def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> None:
     if not e2e_enabled():
@@ -201,22 +337,28 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
         pytest.skip(format_e2e_skip(skip_reasons))
 
     config = load_config(KYVERNO_FIXTURE)
+    assert config.chart.source.version == _latest_stable_kyverno_chart_version(), (
+        "Kyverno E2E fixture must pin the latest stable chart from "
+        f"{KYVERNO_CHART_INDEX}"
+    )
     namespace = "chartpatch-kyverno-e2e"
     release = "chartpatch-kyverno"
+    workload_namespace = "chartpatch-registry-policy-e2e"
     registry = None
     cluster: ClusterHandle | None = None
     try:
         registry = ensure_local_registry()
     except RegistryUnavailable as exc:
-        pytest.skip(format_e2e_skip([str(exc)]))
+        pytest.fail(str(exc))
 
     try:
         try:
             cluster = ensure_k3d_cluster(registry=config.registry.url)
         except ClusterUnavailable as exc:
-            pytest.skip(format_e2e_skip([f"local k3s cluster: {exc}"]))
+            pytest.fail(f"local k3s cluster: {exc}")
 
         _cleanup_kyverno_release(namespace, release)
+        _cleanup_policy_workload(workload_namespace)
 
         completed = _run(
             [sys.executable, "-m", "chartpatch", "sync", str(KYVERNO_FIXTURE)],
@@ -262,9 +404,16 @@ def test_chartpatch_sync_kyverno_fixture_installs_from_local_oci_registry() -> N
         ), "expected all running Kyverno container images to use the local registry; found: " + (
             ", ".join(images)
         )
+
+        _mirror_test_workload_image()
+        _install_local_registry_policy()
+        _run(["kubectl", "create", "namespace", workload_namespace])
+        _assert_external_registry_is_rejected(workload_namespace)
+        _deploy_from_local_registry(workload_namespace)
     finally:
-        _cleanup_kyverno_release(namespace, release)
         if cluster is not None:
+            _cleanup_policy_workload(workload_namespace)
+            _cleanup_kyverno_release(namespace, release)
             delete_k3d_cluster(cluster)
         if registry is not None:
             stop_local_registry(registry)

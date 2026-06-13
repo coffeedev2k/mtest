@@ -39,6 +39,7 @@ def test_mirror_builds_exact_skopeo_copy_command() -> None:
         (
             "skopeo",
             "copy",
+            "--dest-tls-verify=false",
             "docker://docker.io/example/app:1.0",
             "docker://localhost:5000/docker.io/example/app:1.0",
         ),
@@ -70,12 +71,14 @@ def test_mirror_copies_multiple_mappings_in_input_order() -> None:
         (
             "skopeo",
             "copy",
+            "--dest-tls-verify=false",
             "docker://docker.io/example/app:1.0",
             "docker://localhost:5000/docker.io/example/app:1.0",
         ),
         (
             "skopeo",
             "copy",
+            "--dest-tls-verify=false",
             "docker://registry.example.com/setup:2.0",
             "docker://localhost:5000/registry.example.com/setup:2.0",
         ),
@@ -97,6 +100,7 @@ def test_mirror_stops_on_first_failed_copy_and_reports_details() -> None:
         (
             "skopeo",
             "copy",
+            "--dest-tls-verify=false",
             "docker://docker.io/example/app:1.0",
             "docker://localhost:5000/docker.io/example/app:1.0",
         ),
@@ -126,7 +130,8 @@ def test_mirror_stops_on_first_failed_copy_and_reports_details() -> None:
     assert "source image: docker.io/example/app:1.0" in message
     assert "target image: localhost:5000/docker.io/example/app:1.0" in message
     assert (
-        "command: skopeo copy docker://docker.io/example/app:1.0 "
+        "command: skopeo copy --dest-tls-verify=false "
+        "docker://docker.io/example/app:1.0 "
         "docker://localhost:5000/docker.io/example/app:1.0"
     ) in message
     assert "exit status: 17" in message
@@ -136,6 +141,7 @@ def test_mirror_stops_on_first_failed_copy_and_reports_details() -> None:
         (
             "skopeo",
             "copy",
+            "--dest-tls-verify=false",
             "docker://docker.io/example/app:1.0",
             "docker://localhost:5000/docker.io/example/app:1.0",
         ),

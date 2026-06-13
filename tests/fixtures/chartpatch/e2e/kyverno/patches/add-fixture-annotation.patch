@@ -8,16 +8,14 @@ Subject: [PATCH] Add chartpatch fixture annotation
  1 file changed, 1 insertion(+)
 
 diff --git a/Chart.yaml b/Chart.yaml
-index 2b2f2e7..7fffb4a 100644
+index e625523..0ba65fb 100644
 --- a/Chart.yaml
 +++ b/Chart.yaml
-@@ -21,6 +21,7 @@ sources:
-   - https://github.com/kyverno/kyverno
- kubeVersion: ">=1.25.0-0"
+@@ -1,4 +1,5 @@
  annotations:
 +  chartpatch.dev/fixture: "kyverno-e2e-pinned"
-   artifacthub.io/operator: "false"
-   artifacthub.io/prerelease: "false"
-   artifacthub.io/links: |
+   artifacthub.io/changes: |
+     - kind: fixed
+       description: Ensure spec.template.metadata isn't null
 -- 
 2.43.0

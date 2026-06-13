@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from .images import ImageTargetMapping
 
 
@@ -79,6 +81,14 @@ def rewrite_chart_images(
             updated = updated.replace(mapping.source, mapping.target)
             replacement_counts[mapping.source] += count
             replacements += count
+
+        if path.name in {"values.yaml", "values.yml"}:
+            updated, structured_replacements = _rewrite_structured_image_values(
+                updated,
+                mappings,
+                replacement_counts,
+            )
+            replacements += structured_replacements
 
         if updated != original:
             try:
@@ -181,6 +191,147 @@ def _is_rewrite_candidate(path: Path, chart_dir: Path) -> bool:
     if relative.suffix in {".yaml", ".yml", ".tpl", ".gotmpl"}:
         return True
     return relative.name in {"Chart.yaml", "values.yaml", "values.yml"}
+
+
+def _rewrite_structured_image_values(
+    text: str,
+    mappings: tuple[ImageTargetMapping, ...],
+    replacement_counts: dict[str, int],
+) -> tuple[str, int]:
+    locations: dict[
+        tuple[str, str],
+        tuple[str, str, tuple[str, ...]],
+    ] = {}
+    grouped_sources: dict[tuple[str, str], list[str]] = {}
+    for mapping in mappings:
+        source_location = _image_location(mapping.source)
+        target_location = _image_location(mapping.target)
+        if source_location is None or target_location is None:
+            continue
+        grouped_sources.setdefault(source_location, []).append(mapping.source)
+        locations[source_location] = (
+            target_location[0],
+            target_location[1],
+            tuple(grouped_sources[source_location]),
+        )
+
+    lines = text.splitlines(keepends=True)
+    entries = _yaml_image_entries(lines)
+    replacements = 0
+    for index, indent, key, repository in entries:
+        if key != "repository" or not isinstance(repository, str):
+            continue
+        siblings = {
+            sibling_key: (sibling_index, sibling_value)
+            for sibling_index, sibling_indent, sibling_key, sibling_value in entries
+            if sibling_indent == indent
+            and _same_yaml_mapping(lines, index, sibling_index, indent)
+        }
+        registry_entry = siblings.get("registry")
+        default_registry_entry = siblings.get("defaultRegistry")
+        registry = registry_entry[1] if registry_entry is not None else None
+        if registry in (None, "", "~"):
+            registry = (
+                default_registry_entry[1]
+                if default_registry_entry is not None
+                else None
+            )
+        if not isinstance(registry, str):
+            continue
+
+        rewrite = locations.get((registry, repository))
+        if rewrite is None:
+            continue
+        target_registry, target_repository, sources = rewrite
+        registry_index = (
+            registry_entry[0]
+            if registry_entry is not None
+            else default_registry_entry[0]
+            if default_registry_entry is not None
+            else None
+        )
+        if registry_index is None:
+            continue
+
+        replacements += _replace_yaml_scalar(
+            lines,
+            registry_index,
+            target_registry,
+        )
+        replacements += _replace_yaml_scalar(
+            lines,
+            index,
+            target_repository,
+        )
+        for source in sources:
+            replacement_counts[source] += 1
+
+    return "".join(lines), replacements
+
+
+def _yaml_image_entries(
+    lines: list[str],
+) -> tuple[tuple[int, int, str, object], ...]:
+    entries: list[tuple[int, int, str, object]] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "{{" in stripped:
+            continue
+        try:
+            value = yaml.safe_load(stripped)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(value, dict) or len(value) != 1:
+            continue
+        key, scalar = next(iter(value.items()))
+        if key not in {"registry", "defaultRegistry", "repository"}:
+            continue
+        if scalar is not None and not isinstance(scalar, str):
+            continue
+        entries.append((index, len(line) - len(line.lstrip()), key, scalar))
+    return tuple(entries)
+
+
+def _same_yaml_mapping(
+    lines: list[str],
+    first_index: int,
+    second_index: int,
+    indent: int,
+) -> bool:
+    start, end = sorted((first_index, second_index))
+    for line in lines[start + 1 : end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        line_indent = len(line) - len(line.lstrip())
+        if line_indent < indent:
+            return False
+    return True
+
+
+def _replace_yaml_scalar(lines: list[str], index: int, value: str) -> int:
+    line = lines[index]
+    newline = "\n" if line.endswith("\n") else ""
+    content = line[:-1] if newline else line
+    indent = content[: len(content) - len(content.lstrip())]
+    key = content.lstrip().split(":", 1)[0]
+    updated = f"{indent}{key}: {value}{newline}"
+    if updated == line:
+        return 0
+    lines[index] = updated
+    return 1
+
+
+def _image_location(reference: str) -> tuple[str, str] | None:
+    name = reference.rsplit("@", 1)[0]
+    last_slash = name.rfind("/")
+    last_colon = name.rfind(":")
+    if last_colon > last_slash:
+        name = name[:last_colon]
+    registry, separator, repository = name.partition("/")
+    if not separator or not registry or not repository:
+        return None
+    return registry, repository
 
 
 def _relative_to(path: Path, root: Path) -> Path:

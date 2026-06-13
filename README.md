@@ -261,6 +261,14 @@ opt-in; to run it, use both the environment gate and marker selection:
 CHARTPATCH_RUN_E2E=1 python -m pytest -q -m e2e tests/test_chartpatch_e2e_kyverno.py
 ```
 
+The test creates a single-server k3d cluster using the pinned
+`rancher/k3s:v1.35.5-k3s1` image, configures it to pull from `localhost:5000`,
+installs the latest stable Kyverno chart pinned by the fixture, and applies an
+enforced `ClusterPolicy` which allows images only from that registry. It then
+verifies that an external image is rejected and that a Deployment using an
+image copied to the local registry becomes available. Any registry, cluster,
+admission, or rollout failure fails the test.
+
 If Docker or a compatible runtime, local registry support, `k3d`/`k3s`, `helm`,
 `skopeo`, required permissions, or upstream network access is unavailable, the
 harness reports an explicit skip reason for the failed prerequisite stage.

@@ -318,6 +318,7 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     )
     assert result.pushed_chart_ref == "oci://localhost:5000/helm/kube-prometheus-stack"
     assert result.rewritten_files == (Path("values.yaml"),)
+    assert not (result.unpacked_chart_path / ".git").exists()
     assert tuple(
         (rewrite.source, rewrite.target, rewrite.replacements)
         for rewrite in result.image_rewrites
@@ -412,12 +413,14 @@ def test_sync_creates_workspace_pulls_unpacks_renders_and_reports(tmp_path: Path
     assert runner.calls[2] == (
         "skopeo",
         "copy",
+        "--dest-tls-verify=false",
         "docker://docker.io/bitnami/nginx:1.27.4",
         "docker://localhost:5000/docker.io/bitnami/nginx:1.27.4",
     )
     assert runner.calls[3] == (
         "skopeo",
         "copy",
+        "--dest-tls-verify=false",
         "docker://registry.example.com/setup:1.0.0",
         "docker://localhost:5000/registry.example.com/setup:1.0.0",
     )
@@ -877,7 +880,10 @@ def test_sync_logs_command_output(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert (logs_dir / "helm-push.stdout.txt").read_text(encoding="utf-8") == "pushed\n"
-    assert "skopeo copy docker://docker.io/bitnami/nginx:1.27.4" in (
+    assert (
+        "skopeo copy --dest-tls-verify=false "
+        "docker://docker.io/bitnami/nginx:1.27.4"
+    ) in (
         logs_dir / "skopeo-copy-1.args.txt"
     ).read_text(encoding="utf-8")
     assert (logs_dir / "git-am.stdout.txt").read_text(encoding="utf-8") == "applied\n"
@@ -1154,6 +1160,7 @@ def test_sync_fails_when_skopeo_copy_fails_and_skips_later_images(tmp_path: Path
         (
             "skopeo",
             "copy",
+            "--dest-tls-verify=false",
             "docker://docker.io/bitnami/nginx:1.27.4",
             "docker://localhost:5000/docker.io/bitnami/nginx:1.27.4",
         ),
@@ -1171,7 +1178,8 @@ def test_sync_fails_when_skopeo_copy_fails_and_skips_later_images(tmp_path: Path
     assert "source image: docker.io/bitnami/nginx:1.27.4" in message
     assert "target image: localhost:5000/docker.io/bitnami/nginx:1.27.4" in message
     assert (
-        "command: skopeo copy docker://docker.io/bitnami/nginx:1.27.4 "
+        "command: skopeo copy --dest-tls-verify=false "
+        "docker://docker.io/bitnami/nginx:1.27.4 "
         "docker://localhost:5000/docker.io/bitnami/nginx:1.27.4"
     ) in message
     assert "exit status: 9" in message

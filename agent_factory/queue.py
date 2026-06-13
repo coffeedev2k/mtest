@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 from pathlib import Path
 from typing import Any
 
@@ -19,40 +21,59 @@ def claim_next_job(
     worker_id: str,
     locks_file: Path | None = None,
 ) -> ClaimedJob | None:
-    queue = read_json(queue_file)
-    locks = read_json(locks_file) if locks_file is not None else None
-    for job in queue.get("jobs", []):
-        if job.get("role") != role or job.get("status") != "queued":
-            continue
-        if any(not _dependency_passed(queue, dependency) for dependency in job.get("depends_on", [])):
-            continue
-        if locks is not None and _write_scope_conflicts(locks, job.get("write_scope", [])):
-            continue
-        job["status"] = "running"
-        job["lease_owner"] = worker_id
-        job["attempt"] = int(job.get("attempt", 0)) + 1
-        write_json(queue_file, queue)
-        if locks_file is not None and locks is not None:
-            _claim_write_scope(locks, job)
-            write_json(locks_file, locks)
-        return ClaimedJob(job=job, queue=queue)
-    return None
+    with _queue_lock(queue_file):
+        queue = read_json(queue_file)
+        locks = read_json(locks_file) if locks_file is not None else None
+        for job in queue.get("jobs", []):
+            if job.get("role") != role or job.get("status") != "queued":
+                continue
+            if any(
+                not _dependency_passed(queue, dependency)
+                for dependency in job.get("depends_on", [])
+            ):
+                continue
+            if locks is not None and _write_scope_conflicts(
+                locks, job.get("write_scope", [])
+            ):
+                continue
+            job["status"] = "running"
+            job["lease_owner"] = worker_id
+            job["attempt"] = int(job.get("attempt", 0)) + 1
+            write_json(queue_file, queue)
+            if locks_file is not None and locks is not None:
+                _claim_write_scope(locks, job)
+                write_json(locks_file, locks)
+            return ClaimedJob(job=job, queue=queue)
+        return None
 
 
 def complete_job(queue_file: Path, job_id: str, locks_file: Path | None = None) -> None:
-    queue = read_json(queue_file)
-    _update_job(queue, job_id, {"status": "passed", "lease_owner": None})
-    write_json(queue_file, queue)
-    if locks_file is not None:
-        _release_write_scope(locks_file, job_id)
+    with _queue_lock(queue_file):
+        queue = read_json(queue_file)
+        _update_job(queue, job_id, {"status": "passed", "lease_owner": None})
+        write_json(queue_file, queue)
+        if locks_file is not None:
+            _release_write_scope(locks_file, job_id)
 
 
 def fail_job(queue_file: Path, job_id: str, error: str, locks_file: Path | None = None) -> None:
-    queue = read_json(queue_file)
-    _update_job(queue, job_id, {"status": "failed", "lease_owner": None, "error": error})
-    write_json(queue_file, queue)
-    if locks_file is not None:
-        _release_write_scope(locks_file, job_id)
+    with _queue_lock(queue_file):
+        queue = read_json(queue_file)
+        _update_job(queue, job_id, {"status": "failed", "lease_owner": None, "error": error})
+        write_json(queue_file, queue)
+        if locks_file is not None:
+            _release_write_scope(locks_file, job_id)
+
+
+@contextmanager
+def _queue_lock(queue_file: Path):
+    lock_file = queue_file.with_name(f".{queue_file.name}.lock")
+    with lock_file.open("a+", encoding="utf-8") as file:
+        fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
 
 def _dependency_passed(queue: dict[str, Any], job_id: str) -> bool:

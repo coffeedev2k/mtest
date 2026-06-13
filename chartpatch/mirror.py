@@ -44,6 +44,7 @@ def _skopeo_copy_args(mapping: ImageTargetMapping) -> list[str]:
     return [
         "skopeo",
         "copy",
+        "--dest-tls-verify=false",
         f"docker://{mapping.source}",
         f"docker://{mapping.target}",
     ]

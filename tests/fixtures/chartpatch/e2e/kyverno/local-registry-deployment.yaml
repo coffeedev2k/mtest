@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-registry-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-registry-smoke
+  template:
+    metadata:
+      labels:
+        app: local-registry-smoke
+    spec:
+      containers:
+        - name: pause
+          image: localhost:5000/chartpatch-e2e/pause:3.10

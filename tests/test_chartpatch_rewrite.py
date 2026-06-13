@@ -104,6 +104,55 @@ def test_rewrites_multiple_different_images_to_different_targets(tmp_path: Path)
     )
 
 
+def test_rewrites_structured_registry_and_repository_values(tmp_path: Path) -> None:
+    chart = _write_chart(tmp_path)
+    values = chart / "values.yaml"
+    values.write_text(
+        "controller:\n"
+        "  image:\n"
+        "    registry: ~\n"
+        "    defaultRegistry: reg.example.io\n"
+        "    repository: team/controller\n"
+        "    tag: ~\n"
+        "readiness:\n"
+        "  image:\n"
+        "    registry: ghcr.io\n"
+        "    repository: team/readiness\n"
+        "    tag: latest\n",
+        encoding="utf-8",
+    )
+
+    result = rewrite_chart_images(
+        chart,
+        (
+            ImageTargetMapping(
+                source="reg.example.io/team/controller:v1.0.0",
+                target="localhost:5000/reg.example.io/team/controller:v1.0.0",
+            ),
+            ImageTargetMapping(
+                source="ghcr.io/team/readiness:latest",
+                target="localhost:5000/ghcr.io/team/readiness:latest",
+            ),
+        ),
+    )
+
+    assert values.read_text(encoding="utf-8") == (
+        "controller:\n"
+        "  image:\n"
+        "    registry: localhost:5000\n"
+        "    defaultRegistry: reg.example.io\n"
+        "    repository: reg.example.io/team/controller\n"
+        "    tag: ~\n"
+        "readiness:\n"
+        "  image:\n"
+        "    registry: localhost:5000\n"
+        "    repository: ghcr.io/team/readiness\n"
+        "    tag: latest\n"
+    )
+    assert result.total_replacements == 4
+    assert result.unreplaced_sources == ()
+
+
 def test_leaves_files_unchanged_when_no_mapped_references_are_present(
     tmp_path: Path,
 ) -> None:

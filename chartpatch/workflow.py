@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+import shutil
 import tarfile
 import tempfile
 
@@ -472,6 +473,18 @@ def run_single_chart_sync(
                 ),
             )
         final_helm_template_verified = True
+
+    try:
+        shutil.rmtree(unpacked_chart / ".git")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise _sync_error(
+            chart,
+            workspace,
+            STAGE_PACKAGE,
+            f"failed to remove temporary git metadata: {exc}",
+        ) from None
 
     package_result = run_helm_package(
         command_runner,

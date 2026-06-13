@@ -17,11 +17,13 @@ LOCAL_REGISTRY = "localhost:5000"
 REGISTRY_CONTAINER_NAME = "chartpatch-e2e-registry"
 REGISTRY_IMAGE = "registry:2"
 K3D_CLUSTER_NAME = "chartpatch-e2e"
+K3S_IMAGE = "rancher/k3s:v1.35.5-k3s1"
 REQUIRED_E2E_TOOLS = ("helm", "git", "skopeo", "kubectl", "k3d")
 CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
 REQUIRED_NETWORK_ENDPOINTS = (
     ("upstream chart repository", "https://kyverno.github.io/kyverno/index.yaml"),
     ("upstream Kyverno image registry", "https://ghcr.io/v2/"),
+    ("test workload image registry", "https://registry.k8s.io/v2/"),
 )
 
 
@@ -363,6 +365,17 @@ def ensure_k3d_cluster(
     timeout_seconds: int = 180,
 ) -> ClusterHandle:
     if k3d_cluster_exists(name):
+        completed = subprocess.run(
+            ["k3d", "cluster", "start", name, "--wait"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise ClusterUnavailable(
+                "failed to start existing k3d cluster: "
+                f"{completed.stderr.strip() or completed.stdout.strip()}"
+            )
         _switch_k3d_context(name)
         return ClusterHandle(name=name, started=False)
 
@@ -377,6 +390,9 @@ def ensure_k3d_cluster(
                 "cluster",
                 "create",
                 name,
+                "--image",
+                K3S_IMAGE,
+                "--no-lb",
                 "--registry-config",
                 registry_config,
                 "--wait",
@@ -430,7 +446,14 @@ def cleanup_helm_release_and_namespace(
 
 def _switch_k3d_context(name: str) -> None:
     completed = subprocess.run(
-        ["k3d", "kubeconfig", "merge", name, "--kubeconfig-switch-context"],
+        [
+            "k3d",
+            "kubeconfig",
+            "merge",
+            name,
+            "--kubeconfig-merge-default",
+            "--kubeconfig-switch-context",
+        ],
         text=True,
         capture_output=True,
         check=False,
