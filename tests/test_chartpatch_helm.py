@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from chartpatch.helm import (
     helm_lint_args,
     helm_package_args,
@@ -9,12 +11,16 @@ from chartpatch.helm import (
     helm_push_args,
     helm_registry_login_args,
     helm_template_args,
+    is_native_helm_repository,
+    nexus_helm_upload_args,
+    nexus_helm_upload_url,
     run_helm_lint,
     run_helm_package,
     run_helm_pull,
     run_helm_push,
     run_helm_registry_login,
     run_helm_template,
+    run_nexus_helm_upload,
     validate_oci_chart_ref,
 )
 from chartpatch.runner import CommandResult
@@ -145,6 +151,39 @@ def test_helm_registry_login_uses_password_stdin() -> None:
     ]
 
 
+def test_native_nexus_helm_upload_command_construction() -> None:
+    chart = Path("/tmp/packages/chart-1.0.0.tgz")
+    repository = "http://localhost:8081/repository/helm-hosted"
+    netrc = Path("/tmp/nexus.netrc")
+
+    assert is_native_helm_repository(repository) is True
+    assert nexus_helm_upload_url(repository) == (
+        "http://localhost:8081/service/rest/v1/components"
+        "?repository=helm-hosted"
+    )
+    assert nexus_helm_upload_args(chart, repository, netrc) == [
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--netrc-file",
+        "/tmp/nexus.netrc",
+        "--request",
+        "POST",
+        "--form",
+        "helm.asset=@/tmp/packages/chart-1.0.0.tgz",
+        (
+            "http://localhost:8081/service/rest/v1/components"
+            "?repository=helm-hosted"
+        ),
+    ]
+
+
+def test_native_nexus_helm_upload_rejects_non_repository_url() -> None:
+    with pytest.raises(ValueError, match="/repository/"):
+        nexus_helm_upload_url("http://localhost:8081/helm-hosted")
+
+
 def test_helm_push_rejects_non_oci_chart_ref() -> None:
     try:
         validate_oci_chart_ref("http://localhost:5000/helm/chart")
@@ -252,3 +291,18 @@ def test_run_helm_registry_login_does_not_put_password_in_args() -> None:
     assert result.returncode == 0
     assert "secret-password" not in runner.args
     assert runner.input_text == "secret-password\n"
+
+
+def test_run_native_nexus_helm_upload_uses_runner() -> None:
+    runner = RecordingRunner()
+
+    result = run_nexus_helm_upload(
+        runner,
+        Path("/tmp/packages/chart-1.0.0.tgz"),
+        "http://localhost:8081/repository/helm-hosted",
+        Path("/tmp/nexus.netrc"),
+    )
+
+    assert result.returncode == 0
+    assert runner.calls[0][0] == "curl"
+    assert "helm.asset=@/tmp/packages/chart-1.0.0.tgz" in runner.calls[0]

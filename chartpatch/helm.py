@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from .runner import CommandResult, CommandRunner
 
@@ -73,6 +74,62 @@ def validate_oci_chart_ref(chart_ref: str) -> None:
             "chart.output.chart_ref must start with oci:// for helm push: "
             f"{chart_ref}"
         )
+
+
+def is_native_helm_repository(chart_ref: str) -> bool:
+    return chart_ref.startswith(("http://", "https://"))
+
+
+def chart_output_label(chart_ref: str) -> str:
+    if is_native_helm_repository(chart_ref):
+        return "Output native Helm repository"
+    return "Output OCI chart reference"
+
+
+def nexus_helm_upload_args(
+    packaged_chart_path: Path,
+    chart_ref: str,
+    netrc_file: Path,
+) -> list[str]:
+    upload_url = nexus_helm_upload_url(chart_ref)
+    return [
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--netrc-file",
+        str(netrc_file),
+        "--request",
+        "POST",
+        "--form",
+        f"helm.asset=@{packaged_chart_path}",
+        upload_url,
+    ]
+
+
+def nexus_helm_upload_url(chart_ref: str) -> str:
+    parsed = urlsplit(chart_ref)
+    marker = "/repository/"
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            "native Helm repository URL must use http:// or https://: "
+            f"{chart_ref}"
+        )
+    if marker not in parsed.path:
+        raise ValueError(
+            "native Nexus Helm repository URL must contain /repository/: "
+            f"{chart_ref}"
+        )
+    repository = parsed.path.split(marker, 1)[1].strip("/")
+    if not repository or "/" in repository:
+        raise ValueError(
+            "native Nexus Helm repository URL must identify one repository: "
+            f"{chart_ref}"
+        )
+    return (
+        f"{parsed.scheme}://{parsed.netloc}/service/rest/v1/components"
+        f"?repository={quote(repository)}"
+    )
 
 
 def helm_push_args(packaged_chart_path: Path, chart_ref: str) -> list[str]:
@@ -152,6 +209,21 @@ def run_helm_push(
     if registry_config is not None:
         args.extend(["--registry-config", str(registry_config)])
     return runner.run(args)
+
+
+def run_nexus_helm_upload(
+    runner: CommandRunner,
+    packaged_chart_path: Path,
+    chart_ref: str,
+    netrc_file: Path,
+) -> CommandResult:
+    return runner.run(
+        nexus_helm_upload_args(
+            packaged_chart_path,
+            chart_ref,
+            netrc_file,
+        )
+    )
 
 
 def run_helm_registry_login(

@@ -4,6 +4,10 @@ This example starts `sonatype/nexus3:3.33.0`, provisions an authenticated
 Docker hosted repository on `localhost:5000`, mirrors chart images into it,
 patches each chart, and publishes the packaged charts as Helm OCI artifacts.
 
+For the alternative where images stay in Docker storage but chart `.tgz`
+packages go to a native Nexus Helm repository, see
+[`nexus-separated-repositories`](../nexus-separated-repositories/README.md).
+
 ## Included Pins
 
 | Chart | Version | Source |

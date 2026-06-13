@@ -341,6 +341,8 @@ def _reject_duplicate_output_chart_refs(charts: tuple[ChartConfig, ...]) -> None
     seen: dict[str, int] = {}
     for index, chart in enumerate(charts):
         chart_ref = chart.output.chart_ref
+        if chart_ref.startswith(("http://", "https://")):
+            continue
         if chart_ref in seen:
             raise ConfigError(
                 f"duplicate output.chart_ref {chart_ref!r} in charts[{index}] "

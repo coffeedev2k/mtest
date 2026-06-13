@@ -14,6 +14,7 @@ from chartpatch.rewrite import ImageRewriteError
 from chartpatch.runner import CommandResult
 from chartpatch.workflow import (
     MultiChartSyncReport,
+    STAGE_HELM_REPOSITORY_UPLOAD,
     STAGE_OCI_PUSH,
     STAGE_PACKAGE,
     STAGE_PATCH_APPLY,
@@ -244,6 +245,8 @@ class StubRunner:
             )
         if args[:2] == ["helm", "push"]:
             return self.push_result or CommandResult(call, 0, "pushed\n", "")
+        if args[:1] == ["curl"]:
+            return self.push_result or CommandResult(call, 0, "", "")
         if args[:3] == ["helm", "registry", "login"]:
             return CommandResult(call, 0, "Login Succeeded\n", "")
         if args[:2] == ["skopeo", "copy"]:
@@ -1143,8 +1146,63 @@ def test_sync_fails_when_helm_push_fails(tmp_path: Path) -> None:
     assert "push stderr" in report
 
 
+def test_sync_uploads_packaged_chart_to_native_nexus_helm_repository(
+    tmp_path: Path,
+) -> None:
+    raw = _with_output_chart_ref(
+        "http://localhost:8081/repository/helm-hosted"
+    )
+    raw["registry"]["username"] = "admin"
+    raw["registry"]["password"] = "secret-password"
+    runner = StubRunner(tmp_path)
+
+    result = run_sync(
+        validate_config(raw),
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    curl_call = next(call for call in runner.calls if call[0] == "curl")
+    assert "secret-password" not in curl_call
+    netrc = Path(curl_call[curl_call.index("--netrc-file") + 1])
+    assert netrc.stat().st_mode & 0o777 == 0o600
+    assert "password secret-password" in netrc.read_text(encoding="utf-8")
+    assert curl_call[-1] == (
+        "http://localhost:8081/service/rest/v1/components"
+        "?repository=helm-hosted"
+    )
+    assert result.pushed_chart_ref == (
+        "http://localhost:8081/repository/helm-hosted"
+    )
+    report = render_sync_report(result)
+    assert (
+        "Uploaded native Helm chart repository: "
+        "http://localhost:8081/repository/helm-hosted"
+    ) in report
+
+
+def test_native_nexus_helm_upload_failure_uses_specific_stage(
+    tmp_path: Path,
+) -> None:
+    raw = _with_output_chart_ref(
+        "http://localhost:8081/repository/helm-hosted"
+    )
+    raw["registry"]["username"] = "admin"
+    raw["registry"]["password"] = "secret-password"
+    runner = StubRunner(
+        tmp_path,
+        push_result=CommandResult(("curl",), 22, "", "upload failed\n"),
+    )
+
+    with pytest.raises(SyncWorkflowError) as exc_info:
+        run_sync(validate_config(raw), repo_root=tmp_path, runner=runner)
+
+    assert exc_info.value.stage == STAGE_HELM_REPOSITORY_UPLOAD
+    assert "Nexus Helm repository upload failed" in str(exc_info.value)
+
+
 def test_sync_rejects_non_oci_chart_ref_before_helm_push(tmp_path: Path) -> None:
-    config = validate_config(_with_output_chart_ref("http://localhost:5000/helm/chart"))
+    config = validate_config(_with_output_chart_ref("ftp://localhost:5000/helm/chart"))
     runner = StubRunner(tmp_path)
 
     with pytest.raises(SyncWorkflowError) as exc_info:
@@ -1152,7 +1210,7 @@ def test_sync_rejects_non_oci_chart_ref_before_helm_push(tmp_path: Path) -> None
 
     message = str(exc_info.value)
     assert "chart.output.chart_ref must start with oci://" in message
-    assert "http://localhost:5000/helm/chart" in message
+    assert "ftp://localhost:5000/helm/chart" in message
     assert [call[:2] for call in runner.calls][-1] == ("helm", "package")
     assert all(call[:2] != ("helm", "push") for call in runner.calls)
 

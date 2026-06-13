@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .plan import ChartPlanEntry, Plan, _enabled
+from .helm import chart_output_label
 
 
 def render_plan(plan: Plan) -> str:
@@ -23,7 +24,8 @@ def render_plan(plan: Plan) -> str:
                 f"  Local registry URL: {entry.registry_url}",
                 "  Registry authentication: "
                 + ("configured" if entry.registry_authenticated else "not configured"),
-                f"  Output OCI chart reference: {entry.output_chart_ref}",
+                f"  {chart_output_label(entry.output_chart_ref)}: "
+                f"{entry.output_chart_ref}",
                 "  Verification steps:",
                 f"    helm_lint: {_enabled(entry.helm_lint)}",
                 f"    helm_template: {_enabled(entry.helm_template)}",
@@ -46,7 +48,7 @@ def _render_single_plan(entry: ChartPlanEntry) -> str:
         f"Local registry URL: {entry.registry_url}",
         "Registry authentication: "
         + ("configured" if entry.registry_authenticated else "not configured"),
-        f"Output OCI chart reference: {entry.output_chart_ref}",
+        f"{chart_output_label(entry.output_chart_ref)}: {entry.output_chart_ref}",
         "Verification steps:",
         f"  helm_lint: {_enabled(entry.helm_lint)}",
         f"  helm_template: {_enabled(entry.helm_template)}",

@@ -11,6 +11,7 @@ from .dependencies import (
     check_required_binaries,
 )
 from .plan import build_plan
+from .helm import is_native_helm_repository
 from .registry import (
     DEFAULT_REGISTRY_CONTAINER,
     DEFAULT_REGISTRY_IMAGE,
@@ -94,8 +95,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             config = load_config(args.config)
             charts = normalize_chart_entries(config)
+            sync_binaries = REQUIRED_SYNC_BINARIES
+            if any(is_native_helm_repository(chart.output_chart_ref) for chart in charts):
+                sync_binaries = (*sync_binaries, "curl")
             if args.command == "quickrun":
-                check_required_binaries((*REQUIRED_SYNC_BINARIES, "docker"))
+                check_required_binaries((*sync_binaries, "docker"))
                 registry = ensure_local_registry(
                     config.registry.url,
                     container_name=args.registry_container,
@@ -111,7 +115,10 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
             else:
-                check_required_binaries()
+                if sync_binaries == REQUIRED_SYNC_BINARIES:
+                    check_required_binaries()
+                else:
+                    check_required_binaries(sync_binaries)
             if not config.is_multi_chart:
                 result = run_single_chart_sync(charts[0])
                 print(render_sync_report(result), end="")

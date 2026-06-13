@@ -7,15 +7,19 @@ from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 import tempfile
+from urllib.parse import urlsplit
 
 from .config import ChartPatchConfig, NormalizedChartConfig, normalize_chart_entries
 from .helm import (
+    chart_output_label,
+    is_native_helm_repository,
     run_helm_lint,
     run_helm_package,
     run_helm_pull,
     run_helm_push,
     run_helm_registry_login,
     run_helm_template,
+    run_nexus_helm_upload,
 )
 from .images import (
     ImageTargetMapping,
@@ -48,6 +52,7 @@ STAGE_REWRITE_VERIFICATION = "rewrite verification"
 STAGE_FINAL_VERIFICATION = "final verification"
 STAGE_PACKAGE = "package"
 STAGE_OCI_PUSH = "OCI push"
+STAGE_HELM_REPOSITORY_UPLOAD = "Helm repository upload"
 
 SYNC_STAGE_NAMES = (
     STAGE_CHART_PULL,
@@ -75,6 +80,9 @@ class SyncSummary:
 
 
 def build_sync_summary(chart: NormalizedChartConfig) -> SyncSummary:
+    stage_names = SYNC_STAGE_NAMES
+    if is_native_helm_repository(chart.output_chart_ref):
+        stage_names = (*SYNC_STAGE_NAMES[:-1], STAGE_HELM_REPOSITORY_UPLOAD)
     return SyncSummary(
         source_repo=chart.source_repo,
         source_chart=chart.source_chart,
@@ -82,6 +90,7 @@ def build_sync_summary(chart: NormalizedChartConfig) -> SyncSummary:
         patch_file=chart.patch_file,
         registry_url=chart.registry_url,
         output_chart_ref=chart.output_chart_ref,
+        stage_names=stage_names,
     )
 
 
@@ -93,7 +102,8 @@ def render_sync_summary(summary: SyncSummary) -> str:
         f"Source chart version: {summary.source_version}",
         f"Patch file: {summary.patch_file}",
         f"Local registry URL: {summary.registry_url}",
-        f"Output OCI chart reference: {summary.output_chart_ref}",
+        f"{chart_output_label(summary.output_chart_ref)}: "
+        f"{summary.output_chart_ref}",
         "Planned sync stages:",
     ]
     lines.extend(
@@ -118,6 +128,7 @@ class SyncWorkspace:
     logs_dir: Path
     registry_auth_file: Path
     helm_registry_config: Path
+    nexus_netrc_file: Path
 
 
 @dataclass(frozen=True)
@@ -538,49 +549,88 @@ def run_single_chart_sync(
     except SyncWorkflowError as exc:
         raise _sync_error(chart, workspace, STAGE_PACKAGE, exc.message) from None
 
+    publish_stage = (
+        STAGE_HELM_REPOSITORY_UPLOAD
+        if is_native_helm_repository(chart.output_chart_ref)
+        else STAGE_OCI_PUSH
+    )
     try:
-        if chart.registry_username is not None and chart.registry_password is not None:
-            login_result = run_helm_registry_login(
-                command_runner,
-                chart.registry_url,
+        if is_native_helm_repository(chart.output_chart_ref):
+            if chart.registry_username is None or chart.registry_password is None:
+                raise ValueError(
+                    "native Nexus Helm repository output requires "
+                    "registry.username and registry.password"
+                )
+            _write_netrc_file(
+                workspace.nexus_netrc_file,
+                chart.output_chart_ref,
                 chart.registry_username,
                 chart.registry_password,
-                workspace.helm_registry_config,
             )
-            _write_command_logs(
-                workspace.logs_dir,
-                "helm-registry-login",
-                login_result,
+            push_result = run_nexus_helm_upload(
+                command_runner,
+                packaged_chart,
+                chart.output_chart_ref,
+                workspace.nexus_netrc_file,
             )
-            if login_result.returncode != 0:
-                raise _sync_error(
-                    chart,
-                    workspace,
-                    STAGE_OCI_PUSH,
-                    _format_command_failure(
-                        "helm registry login failed",
-                        login_result,
-                    ),
+        else:
+            if chart.registry_username is not None and chart.registry_password is not None:
+                login_result = run_helm_registry_login(
+                    command_runner,
+                    chart.registry_url,
+                    chart.registry_username,
+                    chart.registry_password,
+                    workspace.helm_registry_config,
                 )
-        push_result = run_helm_push(
-            command_runner,
-            packaged_chart,
-            chart.output_chart_ref,
-            registry_config=(
-                workspace.helm_registry_config
-                if chart.registry_username is not None
-                else None
-            ),
-        )
+                _write_command_logs(
+                    workspace.logs_dir,
+                    "helm-registry-login",
+                    login_result,
+                )
+                if login_result.returncode != 0:
+                    raise _sync_error(
+                        chart,
+                        workspace,
+                        STAGE_OCI_PUSH,
+                        _format_command_failure(
+                            "helm registry login failed",
+                            login_result,
+                        ),
+                    )
+            push_result = run_helm_push(
+                command_runner,
+                packaged_chart,
+                chart.output_chart_ref,
+                registry_config=(
+                    workspace.helm_registry_config
+                    if chart.registry_username is not None
+                    else None
+                ),
+            )
     except ValueError as exc:
-        raise _sync_error(chart, workspace, STAGE_OCI_PUSH, str(exc)) from None
-    _write_command_logs(workspace.logs_dir, "helm-push", push_result)
+        raise _sync_error(chart, workspace, publish_stage, str(exc)) from None
+    _write_command_logs(
+        workspace.logs_dir,
+        (
+            "nexus-helm-upload"
+            if publish_stage == STAGE_HELM_REPOSITORY_UPLOAD
+            else "helm-push"
+        ),
+        push_result,
+    )
     if push_result.returncode != 0:
         raise _sync_error(
             chart,
             workspace,
-            STAGE_OCI_PUSH,
-            _format_command_failure("helm push failed", push_result),
+            publish_stage,
+            _format_command_failure(
+                (
+                    "Nexus Helm repository upload failed"
+                    if publish_stage == STAGE_HELM_REPOSITORY_UPLOAD
+                    else "helm push failed"
+                ),
+                push_result,
+            ),
         )
 
     return SyncResult(
@@ -642,6 +692,7 @@ def create_sync_workspace(
         logs_dir=logs_dir,
         registry_auth_file=root / "registry-auth.json",
         helm_registry_config=root / "helm-registry-config.json",
+        nexus_netrc_file=root / "nexus.netrc",
     )
 
 
@@ -654,6 +705,24 @@ def _write_registry_auth_file(
     encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     path.write_text(
         json.dumps({"auths": {registry: {"auth": encoded}}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+
+def _write_netrc_file(
+    path: Path,
+    repository_url: str,
+    username: str,
+    password: str,
+) -> None:
+    hostname = urlsplit(repository_url).hostname
+    if hostname is None:
+        raise ValueError(f"invalid Helm repository URL: {repository_url}")
+    path.write_text(
+        f"machine {hostname}\n"
+        f"  login {username}\n"
+        f"  password {password}\n",
         encoding="utf-8",
     )
     path.chmod(0o600)
@@ -679,7 +748,8 @@ def render_sync_report(
             f"Source chart version: {result.source_version}",
             f"Configured patch file: {result.patch_file}",
             f"Local registry URL: {result.registry_url}",
-            f"Output OCI chart reference: {result.output_chart_ref}",
+            f"{chart_output_label(result.output_chart_ref)}: "
+            f"{result.output_chart_ref}",
             f"Workspace path: {result.workspace_path}",
             f"Pulled chart archive: {result.chart_archive_path}",
             f"Unpacked chart path: {result.unpacked_chart_path}",
@@ -746,7 +816,12 @@ def render_sync_report(
     if result.packaged_chart_path is not None:
         lines.append(f"Packaged chart: {result.packaged_chart_path}")
     if result.pushed_chart_ref is not None:
-        lines.append(f"Pushed OCI chart reference: {result.pushed_chart_ref}")
+        if is_native_helm_repository(result.pushed_chart_ref):
+            lines.append(
+                f"Uploaded native Helm chart repository: {result.pushed_chart_ref}"
+            )
+        else:
+            lines.append(f"Pushed OCI chart reference: {result.pushed_chart_ref}")
     lines.append("Overall status: success")
     return "\n".join(lines) + "\n"
 
@@ -791,7 +866,8 @@ def render_chart_sync_report(report: ChartSyncReport) -> str:
             f"Source chart version: {report.source_version}",
             f"Configured patch file: {report.patch_file}",
             f"Local registry URL: {report.registry_url}",
-            f"Output OCI chart reference: {report.output_chart_ref}",
+            f"{chart_output_label(report.output_chart_ref)}: "
+            f"{report.output_chart_ref}",
         ]
     )
     if report.error.workspace_path is not None:

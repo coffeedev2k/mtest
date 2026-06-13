@@ -33,7 +33,7 @@ sudo install -m 0755 dist/chartpatch /usr/local/bin/chartpatch
 
 Python is only needed to build and test the executable. The installed binary
 does not require Python or this source tree. It still invokes `helm`, `git`,
-`skopeo`, and, for `quickrun`, Docker.
+`skopeo`, `curl` for native Nexus Helm uploads, and, for `quickrun`, Docker.
 
 ## Quick start
 
@@ -47,6 +47,10 @@ The runnable authenticated `kube-prometheus-stack` example is documented in
 The Nexus `3.33.0` multi-chart example is documented in
 [`examples/nexus-multi-chart/README.md`](examples/nexus-multi-chart/README.md).
 It provisions Nexus and syncs nine explicitly pinned charts with their images.
+The separate-storage variant is in
+[`examples/nexus-separated-repositories/README.md`](examples/nexus-separated-repositories/README.md):
+images use Docker hosted storage while chart packages use native Helm hosted
+storage.
 
 For an already-built or installed binary, put a config and its patch file on
 the target system and run:
@@ -83,6 +87,7 @@ Install these tools before running `chartpatch sync`:
 - `helm`
 - `git`
 - `skopeo`
+- `curl` when publishing to a native Nexus Helm repository
 - Docker for `quickrun` to run the local Registry v2 container
 
 Full local end-to-end validation is opt-in and also requires `kubectl` plus
@@ -128,6 +133,20 @@ chart:
 
 All fields shown above are required. `verification.helm_lint` and
 `verification.helm_template` must be booleans.
+
+`output.chart_ref` supports two publication modes:
+
+```yaml
+# Helm OCI artifact stored in a Docker repository
+chart_ref: oci://localhost:5000/helm/example
+
+# Packaged chart stored in a native Nexus Helm hosted repository
+chart_ref: http://localhost:8081/repository/helm-hosted
+```
+
+Multiple charts may share one native Helm repository URL. Native uploads use
+`registry.username` and `registry.password` through a temporary `0600` netrc
+file.
 
 For multiple charts, replace top-level `chart` with a non-empty top-level
 `charts` list containing entries with the same fields:
@@ -215,7 +234,8 @@ At a practical workflow level, `sync`:
     references no longer leak into the final manifests.
 11. Runs configured final verification with `helm lint` and/or `helm template`.
 12. Packages the patched chart with `helm package`.
-13. Pushes the packaged chart to `chart.output.chart_ref` with `helm push`.
+13. Publishes it with `helm push` for OCI output or through the Nexus
+    Components API for a native Helm repository URL.
 14. Prints a run report with the workspace path, discovered images, image
     mappings, patch status, rewrite summary, verification status, package path,
     and pushed OCI chart reference.
