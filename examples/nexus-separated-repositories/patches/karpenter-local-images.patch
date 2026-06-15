@@ -1,0 +1,27 @@
+From 7c5ffb367e2d5ba66dc7892ce072b10d05239edc Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:44 +0000
+Subject: [PATCH] migrate karpenter defaults to company registry
+
+
+diff --git a/values.yaml b/values.yaml
+index 1f6a63f..3032f11 100644
+--- a/values.yaml
++++ b/values.yaml
+@@ -124,11 +124,11 @@ controller:
+   containerName: controller
+   image:
+     # -- Repository path to the controller image.
+-    repository: public.ecr.aws/karpenter/controller
++    repository: localhost:5000/public.ecr.aws/karpenter/controller
+     # -- Tag of the controller image.
+     tag: 1.11.1
+     # -- SHA256 digest of the controller image.
+-    digest: sha256:001bce8d2de3e095b910df23859a02c6744358f13339076e9408bd912d078abb
++    digest: ""
+   # -- Additional environment variables for the controller pod.
+   env: []
+   # - name: AWS_REGION
+-- 
+2.43.0
+

@@ -9,3 +9,4 @@ CHARTPATCH_BIN="${CHARTPATCH_BIN:-$REPO_ROOT/dist/chartpatch}"
 "$CHARTPATCH_BIN" plan "$EXAMPLE_DIR/config.yaml"
 "$CHARTPATCH_BIN" sync "$EXAMPLE_DIR/config.yaml"
 "$EXAMPLE_DIR/verify.sh"
+python3 "$REPO_ROOT/examples/nexus-e2e.py" --mode native

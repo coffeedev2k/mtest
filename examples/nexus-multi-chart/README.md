@@ -1,74 +1,76 @@
-# Nexus Multi-Chart Example
+# Nexus OCI Corporate Migration Example
 
-This example starts `sonatype/nexus3:3.33.0`, provisions an authenticated
-Docker hosted repository on `localhost:5000`, mirrors chart images into it,
-patches each chart, and publishes the packaged charts as Helm OCI artifacts.
+This example emulates moving externally maintained Helm charts and their
+images into repositories owned by a company.
 
-For the alternative where images stay in Docker storage but chart `.tgz`
-packages go to a native Nexus Helm repository, see
+`chartpatch` performs the following flow for every pinned chart:
+
+1. Downloads the chart from its upstream repository.
+2. Discovers and mirrors its rendered images into the authenticated Nexus
+   Docker repository at `localhost:5000`.
+3. Applies that chart's dedicated patch from `patches/`. The patch changes the
+   chart defaults to the mirrored `localhost:5000/...` image names.
+4. Publishes the patched chart as a Helm OCI artifact in the same Nexus Docker
+   repository.
+5. Creates a k3d cluster without Traefik, installs the patched Kyverno chart
+   from Nexus, and enables an admission policy which rejects company workload
+   images not starting with `localhost:5000/`. The `kube-system` namespace is
+   excluded because its images are supplied by k3s itself.
+6. Installs all patched charts from Nexus and fails if rendering, admission,
+   image pulling, or a waited workload rollout fails.
+
+The `raw` chart has no image by default. Its dedicated patch adds a ConfigMap,
+so the example still proves that the downloaded chart was patched, published,
+and installed.
+
+## Repositories
+
+```text
+Nexus UI/API:       http://localhost:8081
+Docker images:      http://localhost:5000
+Helm OCI artifacts: oci://localhost:5000/helm/...
+Username:           admin
+Password:           chartpatch-nexus-password
+```
+
+This variant keeps images and Helm OCI artifacts in `docker-hosted`. The
+separate-storage variant is documented in
 [`nexus-separated-repositories`](../nexus-separated-repositories/README.md).
 
-## Included Pins
+## Pinned Charts
 
-| Chart | Version | Source |
+| Chart | Version | Patch |
 | --- | --- | --- |
-| rabbitmq | 16.0.13 | Bitnami OCI |
-| raw | 0.2.5 | Helm incubator |
-| gateway-helm | v1.8.0 | Envoy OCI |
-| kubed | v0.13.2 | AppsCode |
-| karpenter | 1.11.1 | AWS Public ECR |
-| aws-load-balancer-controller | 3.4.0 | AWS EKS charts |
-| kyverno | 3.8.0 | Kyverno |
-| kube-bench | 0.1.16 | Delivery Hero |
-| policy-reporter | 3.7.4 | Kyverno policy reporter |
+| rabbitmq | 16.0.13 | `rabbitmq-local-images.patch` |
+| raw | 0.2.5 | `raw-migration-smoke.patch` |
+| gateway-helm | v1.8.0 | `envoy-gateway-local-images.patch` |
+| kubed | v0.13.2 | `kubed-local-images.patch` |
+| karpenter | 1.11.1 | `karpenter-local-images.patch` |
+| aws-load-balancer-controller | 3.4.0 | `aws-load-balancer-controller-local-images.patch` |
+| kyverno | 3.8.1 | `kyverno-local-images.patch` |
+| kube-bench | 0.1.16 | `kube-bench-local-images.patch` |
+| policy-reporter | 3.7.4 | `policy-reporter-local-images.patch` |
 
-These are the chart/version pairs explicitly pinned in the supplied
-configuration fragments. Entries that had no version in those fragments are
-not assigned an implicit latest version.
+RabbitMQ and kubed use `image_overrides` because their historical upstream
+image names are no longer pullable. Their patched defaults retain the expected
+company-side names.
 
 ## Run
 
-Build `chartpatch` first:
+Build the binary and run the complete migration test:
 
 ```bash
 python -m PyInstaller --clean --noconfirm chartpatch.spec
-```
-
-Run the complete example:
-
-```bash
 ./examples/nexus-multi-chart/run.sh
 ```
 
-The local credentials are intentionally fixed for this disposable example:
+Set `KEEP_K3D_CLUSTER=1` to retain `chartpatch-nexus-oci` after the run for
+inspection. Otherwise the disposable cluster is deleted automatically.
 
-```text
-username: admin
-password: chartpatch-nexus-password
-```
-
-Nexus endpoints:
-
-```text
-UI/API: http://localhost:8081
-Docker and Helm OCI: http://localhost:5000
-```
-
-Inspect stored components:
-
-```bash
-curl -u admin:chartpatch-nexus-password \
-  'http://localhost:8081/service/rest/v1/components?repository=docker-hosted'
-```
-
-Stop or remove the example:
-
-```bash
-docker stop chartpatch-nexus
-docker rm chartpatch-nexus
-docker volume rm chartpatch-nexus-data
-```
-
-The shared patch adds `chartpatch-nexus-example.txt` to every chart. Image
-registry changes are performed by `chartpatch` from the images discovered in
-each rendered chart.
+Karpenter and AWS Load Balancer Controller require AWS APIs and IAM to operate.
+The k3d test installs their real chart resources with zero controller replicas
+and verifies their local image defaults and Kyverno admission. The AWS service
+mutator webhook is disabled because it has no endpoints at zero replicas.
+Kyverno's admission controller remains enabled while its background, cleanup,
+and reports controllers are disabled in the disposable cluster. The remaining
+long-running workloads are installed with Helm rollout waiting enabled.

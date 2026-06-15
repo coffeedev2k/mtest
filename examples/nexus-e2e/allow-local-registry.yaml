@@ -1,0 +1,30 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: allow-local-registry-only
+spec:
+  admission: true
+  background: false
+  rules:
+    - name: require-company-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+      validate:
+        failureAction: Enforce
+        message: Images must be pulled from localhost:5000.
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - image: "localhost:5000/*"
+            =(initContainers):
+              - image: "localhost:5000/*"
+            containers:
+              - image: "localhost:5000/*"

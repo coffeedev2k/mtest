@@ -1,0 +1,22 @@
+From 1dd71ea274670859946ff3dd25f482c6ca18f9ce Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:46 +0000
+Subject: [PATCH] migrate kube-bench defaults to company registry
+
+
+diff --git a/values.yaml b/values.yaml
+index d5e51dc..57ba5b2 100644
+--- a/values.yaml
++++ b/values.yaml
+@@ -9,7 +9,7 @@ cronjob:
+   command: []
+ 
+ image:
+-  repository: aquasec/kube-bench
++  repository: localhost:5000/docker.io/aquasec/kube-bench
+   tag: v0.8.0
+   pullPolicy: IfNotPresent
+ 
+-- 
+2.43.0
+

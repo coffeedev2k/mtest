@@ -25,7 +25,7 @@ def test_nexus_example_contains_all_explicitly_pinned_charts() -> None:
         ("kubed", "v0.13.2"),
         ("karpenter", "1.11.1"),
         ("aws-load-balancer-controller", "3.4.0"),
-        ("kyverno", "3.8.0"),
+        ("kyverno", "3.8.1"),
         ("kube-bench", "0.1.16"),
         ("policy-reporter", "3.7.4"),
     }
@@ -61,18 +61,27 @@ def test_nexus_example_contains_all_explicitly_pinned_charts() -> None:
     }
 
 
-def test_nexus_example_scripts_and_shared_patch_are_present() -> None:
+def test_nexus_example_scripts_and_per_chart_patches_are_present() -> None:
     for relative_path in (
         "README.md",
         "start-nexus.sh",
         "run.sh",
         "verify.sh",
         "verify.py",
-        "patches/add-nexus-example-marker.patch",
     ):
         assert (EXAMPLE_ROOT / relative_path).is_file()
+
+    config = load_config(EXAMPLE_ROOT / "config.yaml")
+    patch_files = {chart.patch.file for chart in config.charts}
+    assert len(patch_files) == len(config.charts) == 9
+    for patch_file in patch_files:
+        text = (REPO_ROOT / patch_file).read_text(encoding="utf-8")
+        assert text.startswith("From ")
+        assert "localhost:5000" in text or "migration-smoke" in text
 
     start_script = (EXAMPLE_ROOT / "start-nexus.sh").read_text(encoding="utf-8")
     assert "sonatype/nexus3:3.33.0" in start_script
     assert '"DockerToken"' in start_script
     assert '"httpPort": 5000' in start_script
+    run_script = (EXAMPLE_ROOT / "run.sh").read_text(encoding="utf-8")
+    assert "nexus-e2e.py\" --mode oci" in run_script

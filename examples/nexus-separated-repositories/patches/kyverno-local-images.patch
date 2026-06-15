@@ -1,0 +1,100 @@
+From 0f7163dd3e6cd21a2e8aa41d4ffe90d6e300b0fb Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:45 +0000
+Subject: [PATCH] migrate kyverno defaults to company registry
+
+
+diff --git a/values.yaml b/values.yaml
+index ed657c2..82b78f0 100644
+--- a/values.yaml
++++ b/values.yaml
+@@ -10,7 +10,7 @@ global:
+   image:
+     # -- (string) Global value that allows to set a single image registry across all deployments.
+     # When set, it will override any values set under `.image.registry` across the chart.
+-    registry: ~
++    registry: localhost:5000
+   # -- (list) Global list of Image pull secrets
+   # When set, it will override any values set under `imagePullSecrets` under different components across the chart.
+   imagePullSecrets: []
+@@ -181,7 +181,7 @@ crds:
+       registry: ~
+       defaultRegistry: reg.kyverno.io
+       # -- (string) Image repository
+-      repository: kyverno/kyverno-cli
++      repository: reg.kyverno.io/kyverno/kyverno-cli
+       # -- (string) Image tag
+       # Defaults to appVersion in Chart.yaml if omitted
+       tag: ~
+@@ -565,9 +565,9 @@ test:
+ 
+   image:
+     # -- (string) Image registry
+-    registry: ghcr.io
++    registry: localhost:5000
+     # -- Image repository
+-    repository: kyverno/readiness-checker
++    repository: ghcr.io/kyverno/readiness-checker
+     # -- Image tag
+     # Defaults to `latest` if omitted
+     tag: ~
+@@ -636,9 +636,9 @@ webhooksCleanup:
+ 
+   image:
+     # -- (string) Image registry
+-    registry: ghcr.io
++    registry: localhost:5000
+     # -- Image repository
+-    repository: kyverno/readiness-checker
++    repository: ghcr.io/kyverno/readiness-checker
+     # -- Image tag
+     # Defaults to `latest` if omitted
+     tag: ~
+@@ -1179,7 +1179,7 @@ admissionController:
+       registry: ~
+       defaultRegistry: reg.kyverno.io
+       # -- Image repository
+-      repository: kyverno/kyvernopre
++      repository: reg.kyverno.io/kyverno/kyvernopre
+       # -- (string) Image tag
+       # If missing, defaults to image.tag
+       tag: ~
+@@ -1228,7 +1228,7 @@ admissionController:
+       registry: ~
+       defaultRegistry: reg.kyverno.io
+       # -- Image repository
+-      repository: kyverno/kyverno
++      repository: reg.kyverno.io/kyverno/kyverno
+       # -- (string) Image tag
+       # Defaults to appVersion in Chart.yaml if omitted
+       tag: ~
+@@ -1495,7 +1495,7 @@ backgroundController:
+     registry: ~
+     defaultRegistry: reg.kyverno.io
+     # -- Image repository
+-    repository: kyverno/background-controller
++    repository: reg.kyverno.io/kyverno/background-controller
+     # -- Image tag
+     # Defaults to appVersion in Chart.yaml if omitted
+     tag: ~
+@@ -1855,7 +1855,7 @@ cleanupController:
+     registry: ~
+     defaultRegistry: reg.kyverno.io
+     # -- Image repository
+-    repository: kyverno/cleanup-controller
++    repository: reg.kyverno.io/kyverno/cleanup-controller
+     # -- (string) Image tag
+     # Defaults to appVersion in Chart.yaml if omitted
+     tag: ~
+@@ -2221,7 +2221,7 @@ reportsController:
+     registry: ~
+     defaultRegistry: reg.kyverno.io
+     # -- Image repository
+-    repository: kyverno/reports-controller
++    repository: reg.kyverno.io/kyverno/reports-controller
+     # -- (string) Image tag
+     # Defaults to appVersion in Chart.yaml if omitted
+     tag: ~
+-- 
+2.43.0
+

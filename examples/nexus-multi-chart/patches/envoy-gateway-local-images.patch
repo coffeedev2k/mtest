@@ -1,0 +1,22 @@
+From 288535dc1a893b636ece555c30ea724bc59ac31d Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:43 +0000
+Subject: [PATCH] migrate gateway-helm defaults to company registry
+
+
+diff --git a/values.yaml b/values.yaml
+index 0338c74..5655d9b 100644
+--- a/values.yaml
++++ b/values.yaml
+@@ -11,7 +11,7 @@ global:
+   images:
+     envoyGateway:
+       # This is the full image name including the hub, repo, and tag.
+-      image: docker.io/envoyproxy/gateway:v1.8.0
++      image: localhost:5000/docker.io/envoyproxy/gateway:v1.8.0
+       # Specify image pull policy if default behavior isn't desired.
+       # Default behavior: latest images will be Always else IfNotPresent.
+       pullPolicy: IfNotPresent
+-- 
+2.43.0
+

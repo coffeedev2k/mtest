@@ -1,0 +1,25 @@
+From 3c3f3937bcc271a16022ba003d4d5ac8a54267d3 Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:46 +0000
+Subject: [PATCH] migrate policy-reporter defaults to company registry
+
+
+diff --git a/values.yaml b/values.yaml
+index d09588d..2e3f776 100644
+--- a/values.yaml
++++ b/values.yaml
+@@ -13,9 +13,9 @@ apiVersionOverride:
+ 
+ image:
+   # -- (string) Image registry
+-  registry: ghcr.io
++  registry: localhost:5000
+   # -- (string) Image repository
+-  repository: kyverno/policy-reporter
++  repository: ghcr.io/kyverno/policy-reporter
+   # -- (string) Image pullPolicy
+   pullPolicy: IfNotPresent
+   # -- (string) Image tag
+-- 
+2.43.0
+

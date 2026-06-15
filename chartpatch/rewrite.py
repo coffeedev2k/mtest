@@ -75,10 +75,13 @@ def rewrite_chart_images(
         updated = original
         replacements = 0
         for mapping in mappings:
-            count = updated.count(mapping.source)
+            updated, count = _replace_source_outside_target(
+                updated,
+                mapping.source,
+                mapping.target,
+            )
             if count == 0:
                 continue
-            updated = updated.replace(mapping.source, mapping.target)
             replacement_counts[mapping.source] += count
             replacements += count
 
@@ -120,6 +123,21 @@ def rewrite_chart_images(
         mappings=rewrite_mappings,
         unreplaced_sources=unreplaced,
     )
+
+
+def _replace_source_outside_target(
+    text: str,
+    source: str,
+    target: str,
+) -> tuple[str, int]:
+    """Rewrite source references without nesting an already-local target."""
+    if source == target:
+        return text, 0
+    parts = text.split(target)
+    replacements = sum(part.count(source) for part in parts)
+    if replacements == 0:
+        return text, 0
+    return target.join(part.replace(source, target) for part in parts), replacements
 
 
 def verify_image_mapping_complete(

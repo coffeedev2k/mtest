@@ -104,6 +104,34 @@ def test_rewrites_multiple_different_images_to_different_targets(tmp_path: Path)
     )
 
 
+def test_does_not_rewrite_source_nested_in_an_existing_target(
+    tmp_path: Path,
+) -> None:
+    chart = _write_chart(tmp_path)
+    values = chart / "values.yaml"
+    values.write_text(
+        "image: localhost:5000/docker.io/envoyproxy/gateway:v1.8.0\n"
+        "upstream: docker.io/envoyproxy/gateway:v1.8.0\n",
+        encoding="utf-8",
+    )
+
+    result = rewrite_chart_images(
+        chart,
+        (
+            ImageTargetMapping(
+                source="docker.io/envoyproxy/gateway:v1.8.0",
+                target="localhost:5000/docker.io/envoyproxy/gateway:v1.8.0",
+            ),
+        ),
+    )
+
+    assert values.read_text(encoding="utf-8") == (
+        "image: localhost:5000/docker.io/envoyproxy/gateway:v1.8.0\n"
+        "upstream: localhost:5000/docker.io/envoyproxy/gateway:v1.8.0\n"
+    )
+    assert result.total_replacements == 1
+
+
 def test_rewrites_structured_registry_and_repository_values(tmp_path: Path) -> None:
     chart = _write_chart(tmp_path)
     values = chart / "values.yaml"

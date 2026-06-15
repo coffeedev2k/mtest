@@ -1,0 +1,23 @@
+From 345c1881c56fe22e4655ace9b5cf24876531f796 Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:43 +0000
+Subject: [PATCH] migrate raw defaults to company registry
+
+
+diff --git a/templates/chartpatch-migration-smoke.yaml b/templates/chartpatch-migration-smoke.yaml
+new file mode 100644
+index 0000000..6755db5
+--- /dev/null
++++ b/templates/chartpatch-migration-smoke.yaml
+@@ -0,0 +1,8 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: {{ include "raw.fullname" . }}-migration-smoke
++  labels:
++    app.kubernetes.io/managed-by: {{ .Release.Service }}
++data:
++  result: "chart downloaded, patched, and installed from the company registry"
+-- 
+2.43.0
+

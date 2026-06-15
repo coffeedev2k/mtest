@@ -1,0 +1,25 @@
+From 0c0e3f150e50287a7b7ca79296ff18abd3b52400 Mon Sep 17 00:00:00 2001
+From: ChartPatch Example <chartpatch@example.invalid>
+Date: Sat, 13 Jun 2026 21:42:44 +0000
+Subject: [PATCH] migrate kubed defaults to company registry
+
+
+diff --git a/values.yaml b/values.yaml
+index 5596c69..6c9f10e 100644
+--- a/values.yaml
++++ b/values.yaml
+@@ -12,9 +12,9 @@ replicaCount: 1
+ 
+ operator:
+   # Docker registry used to pull Config Syncer operator image
+-  registry: appscode
++  registry: localhost:5000
+   # Config Syncer operator container image
+-  repository: kubed
++  repository: docker.io/appscode/kubed
+   # Config Syncer operator container image tag
+   tag: v0.13.2
+   # Compute Resources required by the operator container
+-- 
+2.43.0
+
